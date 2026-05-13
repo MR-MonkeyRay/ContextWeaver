@@ -22,10 +22,21 @@ afterEach(async () => {
 });
 
 describe('skill assets', () => {
-  it('includes bundled skills in the npm package file list', async () => {
-    const pkg = JSON.parse(await read('package.json')) as { files?: string[] };
+  it('keeps conditional grammar packages optional and shipped docs available', async () => {
+    const pkg = JSON.parse(await read('package.json')) as {
+      dependencies?: Record<string, string>;
+      files?: string[];
+      optionalDependencies?: Record<string, string>;
+    };
 
     expect(pkg.files).toContain('skills/**/*');
+    expect(pkg.files).toContain('docs/**/*.md');
+    expect(pkg.dependencies).not.toHaveProperty('tree-sitter-dart');
+    expect(pkg.dependencies).not.toHaveProperty('tree-sitter-kotlin');
+    expect(pkg.optionalDependencies).toMatchObject({
+      'tree-sitter-dart': '^1.0.0',
+      'tree-sitter-kotlin': '^0.3.8',
+    });
   });
 
   it('ships a Chinese using-contextweaver skill backed by a local script', async () => {
