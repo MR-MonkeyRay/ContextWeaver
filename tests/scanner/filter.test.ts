@@ -1,11 +1,13 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { crawl } from '../../src/scanner/crawler.js';
 import { initFilter, isAllowedFile, isFiltered, isIncluded } from '../../src/scanner/filter.js';
 
 const tempDirs: string[] = [];
+let previousHome: string | undefined;
+let previousXdgConfigHome: string | undefined;
 
 async function createRepo(options?: {
   cwconfig?: Record<string, unknown>;
@@ -49,7 +51,36 @@ async function createRepo(options?: {
   return repoRoot;
 }
 
+async function useIsolatedGitConfig(): Promise<{ home: string; xdgConfigHome: string }> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-filter-home-'));
+  const xdgConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-filter-xdg-'));
+  tempDirs.push(home, xdgConfigHome);
+
+  process.env.HOME = home;
+  process.env.XDG_CONFIG_HOME = xdgConfigHome;
+
+  return { home, xdgConfigHome };
+}
+
+beforeEach(async () => {
+  previousHome = process.env.HOME;
+  previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  await useIsolatedGitConfig();
+});
+
 afterEach(async () => {
+  if (previousHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = previousHome;
+  }
+
+  if (previousXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = previousXdgConfigHome;
+  }
+
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -141,6 +172,144 @@ describe('scanner filter', () => {
     expect(isFiltered('logs/debug.ts')).toBe(true);
   });
 
+  it('applies core.excludesFile from git config without overriding project ignores', async () => {
+    const repoRoot = await createRepo({
+      cwconfig: {
+        indexing: {
+          includePatterns: ['logs/**', 'src/generated/**'],
+          ignorePatterns: ['src/generated/**'],
+        },
+      },
+    });
+    const globalIgnorePath = path.join(process.env.HOME ?? '', 'global-ignore');
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = ~/global-ignore\n',
+      'utf-8',
+    );
+    await fs.writeFile(globalIgnorePath, 'logs/\n!src/generated/schema.ts\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isIncluded('logs/debug.ts')).toBe(true);
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+    expect(isFiltered('src/generated/schema.ts')).toBe(true);
+  });
+
+  it('uses the last duplicate core.excludesFile from one config file', async () => {
+    const repoRoot = await createRepo();
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = first-ignore\n  excludesFile = second-ignore\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'first-ignore'), 'logs/\n', 'utf-8');
+    await fs.writeFile(path.join(repoRoot, 'second-ignore'), 'docs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(false);
+    expect(isFiltered('docs/readme.md')).toBe(true);
+  });
+
+  it('strips unquoted inline comments from core.excludesFile values', async () => {
+    const repoRoot = await createRepo();
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = global-ignore # comment ; also comment\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'global-ignore'), 'logs/\n', 'utf-8');
+    await fs.writeFile(
+      path.join(repoRoot, 'global-ignore # comment ; also comment'),
+      'docs/\n',
+      'utf-8',
+    );
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+    expect(isFiltered('docs/readme.md')).toBe(false);
+  });
+
+  it('preserves inline comment characters inside quoted core.excludesFile values', async () => {
+    const repoRoot = await createRepo();
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = "ignore # still path"\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'ignore # still path'), 'logs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+  });
+
+  it('unescapes quoted core.excludesFile values', async () => {
+    const repoRoot = await createRepo();
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = "ignore \\"quoted\\" \\\\ slash"\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'ignore "quoted" \\ slash'), 'logs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+  });
+
+  it('ignores core subsection excludesFile entries', async () => {
+    const repoRoot = await createRepo();
+    const xdgIgnorePath = path.join(process.env.XDG_CONFIG_HOME ?? '', 'git', 'ignore');
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.mkdir(path.dirname(xdgIgnorePath), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core "subsection"]\n  excludesFile = subsection-ignore\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'subsection-ignore'), 'logs/\n', 'utf-8');
+    await fs.writeFile(xdgIgnorePath, 'docs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(false);
+    expect(isFiltered('docs/readme.md')).toBe(true);
+  });
+
+  it('resolves relative core.excludesFile from the scanned repo root', async () => {
+    const repoRoot = await createRepo();
+    await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, '.git', 'config'),
+      '[core]\n  excludesFile = relative-ignore\n',
+      'utf-8',
+    );
+    await fs.writeFile(path.join(repoRoot, 'relative-ignore'), 'logs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+  });
+
+  it('falls back to XDG git ignore when core.excludesFile is not configured', async () => {
+    const repoRoot = await createRepo();
+    const xdgIgnorePath = path.join(process.env.XDG_CONFIG_HOME ?? '', 'git', 'ignore');
+    await fs.mkdir(path.dirname(xdgIgnorePath), { recursive: true });
+    await fs.writeFile(xdgIgnorePath, 'logs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+  });
+
   it('treats an empty includePatterns array as an empty scope', async () => {
     const repoRoot = await createRepo({
       cwconfig: {
@@ -174,6 +343,24 @@ describe('scanner filter', () => {
 
     expect(isIncluded('src/app.ts')).toBe(false);
     expect(isIncluded('packages/core/src/index.ts')).toBe(true);
+  });
+
+  it('updates filtering when global git ignore changes', async () => {
+    const repoRoot = await createRepo();
+    const xdgIgnorePath = path.join(process.env.XDG_CONFIG_HOME ?? '', 'git', 'ignore');
+    await fs.mkdir(path.dirname(xdgIgnorePath), { recursive: true });
+    await fs.writeFile(xdgIgnorePath, 'logs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+    expect(isFiltered('logs/debug.ts')).toBe(true);
+    expect(isFiltered('docs/readme.md')).toBe(false);
+
+    await fs.writeFile(xdgIgnorePath, 'docs/\n', 'utf-8');
+
+    await initFilter(repoRoot);
+
+    expect(isFiltered('logs/debug.ts')).toBe(false);
+    expect(isFiltered('docs/readme.md')).toBe(true);
   });
 
   it('never includes cwconfig.json itself in index candidates', async () => {
