@@ -219,6 +219,12 @@ export async function runIndexCliCommand(options: {
       output.info(line);
     }
   } catch (err) {
+    const error = err as { message?: string };
+    if (process.env.CW_BACKGROUND_INDEX === '1' && error.message?.includes('无法获取项目锁')) {
+      logger.info('后台索引已由其他进程处理，当前进程退出');
+      return;
+    }
+
     for (const line of renderFailureSummary(err)) {
       output.error(line);
     }

@@ -1,3 +1,4 @@
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +28,37 @@ import { logger } from './utils/logger.js';
 function getBaseDir(): string {
   return path.join(os.homedir(), '.contextweaver');
 }
+
+function getIndexLockTimeoutMs(): number {
+  const raw = process.env.CW_INDEX_LOCK_TIMEOUT_MS;
+  if (!raw) {
+    return process.env.CW_BACKGROUND_INDEX === '1' ? 500 : 10 * 60 * 1000;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 10 * 60 * 1000;
+}
+
+export function registerBackgroundIndexMarkerCleanup(): void {
+  const markerPath = process.env.CW_BACKGROUND_INDEX_MARKER_PATH;
+  if (!markerPath) {
+    return;
+  }
+
+  const cleanup = () => {
+    try {
+      if (fsSync.existsSync(markerPath)) {
+        fsSync.unlinkSync(markerPath);
+      }
+    } catch {
+      // 忽略清理失败，避免影响主流程退出
+    }
+  };
+
+  process.on('exit', cleanup);
+}
+
+registerBackgroundIndexMarkerCleanup();
 
 function getPackageRootDir(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -480,7 +512,7 @@ export async function runIndexCommand(options: {
       (options.scanFn ?? scan)(options.rootPath, {
         force: options.force,
         precomputedFilePaths: preview.matchedFilePaths,
-        onProgress: (current, total, message) => {
+        onProgress: (_current, _total, message) => {
           if (!message) {
             return;
           }
@@ -493,7 +525,7 @@ export async function runIndexCommand(options: {
           logLine(message);
         },
       }),
-    10 * 60 * 1000,
+    getIndexLockTimeoutMs(),
   );
   await (options.recordIndexedProjectFn ?? recordIndexedProject)(options.rootPath, { confirmedAt });
   return stats;

@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getProjectIdentity } from '../db/index.js';
 import type { ContextPack, SearchConfig, Segment } from '../search/types.js';
 import { logger } from '../utils/logger.js';
@@ -42,6 +44,8 @@ export type SearchOutputFormat = 'text' | 'json';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 const INDEX_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const BACKGROUND_INDEX_COOLDOWN_MS = 60 * 1000;
+const backgroundIndexStartedAt = new Map<string, number>();
 
 async function ensureDefaultEnvFile(): Promise<void> {
   const configDir = BASE_DIR;
@@ -80,6 +84,142 @@ RERANK_TOP_N=20
 function isProjectIndexed(projectId: string): boolean {
   const dbPath = path.join(BASE_DIR, projectId, 'index.db');
   return fs.existsSync(dbPath);
+}
+
+function getBackgroundIndexRequestPath(projectId: string): string {
+  return path.join(BASE_DIR, projectId, 'background-index.request');
+}
+
+function claimBackgroundIndexRequest(projectId: string): string | null {
+  const requestPath = getBackgroundIndexRequestPath(projectId);
+  const dir = path.dirname(requestPath);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  try {
+    const content = fs.readFileSync(requestPath, 'utf-8');
+    const requestInfo = JSON.parse(content) as { pid: number; timestamp: number };
+    if (Date.now() - requestInfo.timestamp < BACKGROUND_INDEX_COOLDOWN_MS) {
+      return null;
+    }
+  } catch {
+    // 文件不存在或损坏时，继续重建预约文件
+  }
+
+  try {
+    fs.unlinkSync(requestPath);
+  } catch {
+    // 允许文件不存在
+  }
+
+  try {
+    fs.writeFileSync(requestPath, JSON.stringify({ pid: process.pid, timestamp: Date.now() }), {
+      flag: 'wx',
+    });
+    return requestPath;
+  } catch (err) {
+    const error = err as NodeJS.ErrnoException;
+    if (error.code !== 'EEXIST') {
+      logger.debug({ error: error.message }, '创建后台索引请求标记失败');
+    }
+    return null;
+  }
+}
+
+function fileExists(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function findPackageRoot(startDir: string): string | null {
+  let currentDir = startDir;
+
+  while (true) {
+    const packageJsonPath = path.join(currentDir, 'package.json');
+    if (fileExists(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+          name?: string;
+        };
+        if (packageJson.name === '@haurynlee/contextweaver') {
+          return currentDir;
+        }
+      } catch {
+        // package.json 损坏时继续向上查找，避免误用未知入口
+      }
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return null;
+    }
+    currentDir = parentDir;
+  }
+}
+
+function resolveExistingPath(candidatePath: string): string | null {
+  const resolvedPath = path.resolve(candidatePath);
+  return fileExists(resolvedPath) ? resolvedPath : null;
+}
+
+function resolveEnvCliEntryPath(): string | null {
+  const overridePath = process.env.CONTEXTWEAVER_CLI_ENTRY || process.env.CW_CLI_ENTRY;
+  if (!overridePath) {
+    return null;
+  }
+
+  return resolveExistingPath(overridePath);
+}
+
+function isContextWeaverCliEntry(candidatePath: string, packageRoot: string): boolean {
+  const realCandidate = fs.realpathSync(candidatePath);
+  const allowedEntries = [
+    path.join(packageRoot, 'dist', 'index.js'),
+    path.join(packageRoot, 'src', 'index.js'),
+    path.join(packageRoot, 'src', 'index.ts'),
+  ]
+    .filter(fileExists)
+    .map((entryPath) => fs.realpathSync(entryPath));
+
+  return allowedEntries.includes(realCandidate);
+}
+
+function resolveCliEntryPath(): string {
+  const envEntryPath = resolveEnvCliEntryPath();
+  if (envEntryPath) {
+    return envEntryPath;
+  }
+
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const packageRoot = findPackageRoot(moduleDir);
+  if (!packageRoot) {
+    throw new Error('无法定位 ContextWeaver package root，跳过后台索引');
+  }
+
+  const invokedPath = process.argv[1];
+  if (invokedPath && fileExists(invokedPath) && isContextWeaverCliEntry(invokedPath, packageRoot)) {
+    return fs.realpathSync(invokedPath);
+  }
+
+  const candidates = [
+    path.join(packageRoot, 'dist', 'index.js'),
+    path.join(packageRoot, 'src', 'index.js'),
+    path.join(packageRoot, 'src', 'index.ts'),
+  ];
+
+  for (const candidate of candidates) {
+    const entryPath = resolveExistingPath(candidate);
+    if (entryPath) {
+      return entryPath;
+    }
+  }
+
+  throw new Error('无法定位 ContextWeaver CLI 入口，跳过后台索引');
 }
 
 async function ensureIndexed(
@@ -124,6 +264,51 @@ async function ensureIndexed(
     },
     INDEX_LOCK_TIMEOUT_MS,
   );
+}
+
+export async function scheduleBackgroundIndex(repoPath: string, projectId: string): Promise<void> {
+  const lastStartedAt = backgroundIndexStartedAt.get(projectId) ?? 0;
+  if (Date.now() - lastStartedAt < BACKGROUND_INDEX_COOLDOWN_MS) {
+    return;
+  }
+
+  const { isProjectLocked } = await import('../utils/lock.js');
+  if (isProjectLocked(projectId)) {
+    logger.debug({ projectId: projectId.slice(0, 10) }, '后台索引已在进行中，跳过重复调度');
+    return;
+  }
+
+  const requestPath = claimBackgroundIndexRequest(projectId);
+  if (!requestPath) {
+    logger.debug({ projectId: projectId.slice(0, 10) }, '后台索引请求已被其他进程预约');
+    return;
+  }
+
+  backgroundIndexStartedAt.set(projectId, Date.now());
+
+  try {
+    const cliEntry = resolveCliEntryPath();
+    const child = spawn(process.execPath, [cliEntry, 'index', repoPath, '--yes'], {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        CW_BACKGROUND_INDEX: '1',
+        CW_INDEX_LOCK_TIMEOUT_MS: '500',
+        CW_BACKGROUND_INDEX_MARKER_PATH: requestPath,
+      },
+    });
+
+    child.unref();
+    logger.info({ projectId: projectId.slice(0, 10), pid: child.pid }, '已启动后台增量索引');
+  } catch (err) {
+    try {
+      fs.unlinkSync(requestPath);
+    } catch {
+      // 忽略清理失败
+    }
+    throw err;
+  }
 }
 
 export function buildSearchResult(pack: ContextPack): SearchResult {
@@ -198,7 +383,15 @@ export async function retrieveCodeContext(
   }
 
   const projectId = getProjectIdentity(input.repoPath).projectId;
-  await ensureIndexed(input.repoPath, projectId, options?.onProgress);
+  if (!isProjectIndexed(projectId)) {
+    await ensureIndexed(input.repoPath, projectId, options?.onProgress);
+  } else {
+    logger.debug({ projectId: projectId.slice(0, 10) }, '命中已有索引，跳过同步增量索引');
+    void scheduleBackgroundIndex(input.repoPath, projectId).catch((err) => {
+      const error = err as { message?: string };
+      logger.warn({ projectId: projectId.slice(0, 10), error: error.message }, '启动后台索引失败');
+    });
+  }
 
   const query = [input.informationRequest, ...(input.technicalTerms || [])]
     .filter(Boolean)
@@ -206,10 +399,13 @@ export async function retrieveCodeContext(
 
   const { SearchService } = await import('../search/SearchService.js');
   const service = new SearchService(projectId, input.repoPath, options?.configOverride);
-  await service.init();
-
-  const pack = await service.buildContextPack(query);
-  return buildSearchResult(pack);
+  try {
+    await service.init();
+    const pack = await service.buildContextPack(query);
+    return buildSearchResult(pack);
+  } finally {
+    service.close();
+  }
 }
 
 function detectSegmentLanguage(filePath: string): string {
