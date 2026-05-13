@@ -16,3 +16,8 @@ test-*
 package-lock.json
 *.tgz
 *.log
+
+# 下载的语法归档
+*.tar.gz
+*.tar.xz
+tree-sitter-*.tar.*

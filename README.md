@@ -33,6 +33,8 @@
 npm install -g @haurynlee/contextweaver
 ```
 
+Windows 安装通常会使用可用的预编译原生依赖；如需本地构建工具或无构建安装路径，见 [Windows 安装说明](./docs/WINDOWS_INSTALL.md)。
+
 ## 初始化
 
 ```bash

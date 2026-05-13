@@ -33,6 +33,8 @@
 npm install -g @haurynlee/contextweaver
 ```
 
+Windows installs normally use available prebuilt native dependencies; see [Windows install notes](./docs/WINDOWS_INSTALL.md) for build-tool fallback and advanced no-build options.
+
 ## Initialize
 
 ```bash
