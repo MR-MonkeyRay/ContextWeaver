@@ -30,14 +30,13 @@ async function readPackageJson(): Promise<PackageJson> {
   return JSON.parse(await fs.readFile(packageJsonPath, 'utf-8')) as PackageJson;
 }
 
-function runEntry(args: string[]): EntryResult {
-  const tempHome = os.tmpdir();
+function runEntry(args: string[], options?: { home?: string }): EntryResult {
   const result = spawnSync(process.execPath, [distEntryPath, ...args], {
     cwd: repoRoot,
     encoding: 'utf-8',
     env: {
       ...process.env,
-      HOME: tempHome,
+      HOME: options?.home ?? os.tmpdir(),
     },
   });
 
@@ -177,5 +176,17 @@ describe('CLI entry smoke tests', () => {
     const searchResult = runEntry(['search']);
     expect(searchResult.status).toBe(1);
     expect(searchResult.output).toContain('缺少 --information-request');
+  });
+
+  it('accepts numeric-looking technical terms for search options', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-entry-home-'));
+    const result = runEntry(
+      ['search', '--information-request', 'lookup repo context', '--technical-terms', '123'],
+      { home },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('当前仓库尚未完成确认式索引');
+    expect(result.output).not.toContain('split is not a function');
   });
 });
