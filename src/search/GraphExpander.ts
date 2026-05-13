@@ -4,7 +4,7 @@
  * 基于 seed chunks 进行智能扩展，补充相关上下文：
  * - E1: 同文件邻居（前后相邻的 chunks）
  * - E2: breadcrumb 补段（同前缀的其他 chunks）
- * - E3: 跨文件引用（支持 TS/JS, Python, Go, Java, Rust）
+ * - E3: 跨文件引用（支持 TS/JS, Python, Go, Java, Rust, Kotlin, PHP, Ruby, Swift, Dart, C/C++, C#）
  */
 
 import type Database from 'better-sqlite3';

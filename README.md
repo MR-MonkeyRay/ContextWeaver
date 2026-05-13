@@ -144,7 +144,7 @@ Embedding 模型对单次输入有 token 上限（由 `EMBEDDINGS_MAX_INPUT_TOKE
 
 ## 多语言支持
 
-ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
+ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析；当部分原生语法包在当前 Node/平台不可加载时，会对已列出的兜底语言使用行分片保证可检索。
 
 | 语言       | AST 解析 | Import 解析 | 文件扩展名                    |
 | ---------- | -------- | ----------- | ----------------------------- |
@@ -154,9 +154,16 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析：
 | Go         | ✅       | ✅          | `.go`                         |
 | Java       | ✅       | ✅          | `.java`                       |
 | Rust       | ✅       | ✅          | `.rs`                         |
+| Kotlin     | 条件支持* | ✅          | `.kt`, `.kts`                 |
+| PHP        | ✅       | ✅          | `.php`                        |
+| Ruby       | ✅       | ✅          | `.rb`                         |
+| Swift      | ✅       | ✅          | `.swift`                      |
+| Dart       | 条件支持* | ✅          | `.dart`                       |
 | C          | ✅       | ✅          | `.c`, `.h`                    |
 | C++        | ✅       | ✅          | `.cpp`, `.hpp`, `.cc`, `.cxx` |
-| C#         | ✅       | ✅          | `.cs`                         |
+| C#         | ✅       | ✅          | `.cs`, `.csx`                 |
+
+* Kotlin/Dart 的 AST 解析取决于 `tree-sitter-kotlin` / `tree-sitter-dart` 原生绑定是否能在当前 Node ABI 与安装环境中加载；加载失败时扫描器会自动退回到行分片，Import 解析仍可用。
 
 ## 致谢
 

@@ -7,17 +7,22 @@
  * - Go
  * - Java
  * - Rust
- * - C/C++
- * - C#
+ * - Kotlin/PHP/Ruby/Swift/Dart
+ * - C/C++/C#
  */
 
 import { CppResolver } from './CppResolver.js';
 import { CSharpResolver } from './CSharpResolver.js';
+import { DartResolver } from './DartResolver.js';
 import { GoResolver } from './GoResolver.js';
 import { JavaResolver } from './JavaResolver.js';
 import { JsTsResolver } from './JsTsResolver.js';
+import { KotlinResolver } from './KotlinResolver.js';
+import { PhpResolver } from './PhpResolver.js';
 import { PythonResolver } from './PythonResolver.js';
+import { RubyResolver } from './RubyResolver.js';
 import { RustResolver } from './RustResolver.js';
+import { SwiftResolver } from './SwiftResolver.js';
 import type { ImportResolver } from './types.js';
 
 export type { ImportResolver } from './types.js';
@@ -32,6 +37,11 @@ export function createResolvers(): ImportResolver[] {
     new GoResolver(),
     new JavaResolver(),
     new RustResolver(),
+    new KotlinResolver(),
+    new PhpResolver(),
+    new RubyResolver(),
+    new SwiftResolver(),
+    new DartResolver(),
     new CppResolver(),
     new CSharpResolver(),
   ];

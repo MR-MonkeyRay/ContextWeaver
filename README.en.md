@@ -134,7 +134,7 @@ Key modules:
 
 ## Multi-Language Support
 
-ContextWeaver uses Tree-sitter to provide native AST parsing support for the following languages:
+ContextWeaver uses Tree-sitter to provide native AST parsing support for the following languages. When a native grammar cannot be loaded in the current Node/platform environment, listed fallback languages are still indexed with line-based chunks.
 
 | Language   | AST Parsing | Import Resolution | File Extensions               |
 | ---------- | ----------- | ----------------- | ----------------------------- |
@@ -144,9 +144,16 @@ ContextWeaver uses Tree-sitter to provide native AST parsing support for the fol
 | Go         | Yes         | Yes               | `.go`                         |
 | Java       | Yes         | Yes               | `.java`                       |
 | Rust       | Yes         | Yes               | `.rs`                         |
+| Kotlin     | Conditional* | Yes               | `.kt`, `.kts`                 |
+| PHP        | Yes         | Yes               | `.php`                        |
+| Ruby       | Yes         | Yes               | `.rb`                         |
+| Swift      | Yes         | Yes               | `.swift`                      |
+| Dart       | Conditional* | Yes               | `.dart`                       |
 | C          | Yes         | Yes               | `.c`, `.h`                    |
 | C++        | Yes         | Yes               | `.cpp`, `.hpp`, `.cc`, `.cxx` |
-| C#         | Yes         | Yes               | `.cs`                         |
+| C#         | Yes         | Yes               | `.cs`, `.csx`                 |
+
+* Kotlin/Dart AST parsing depends on the `tree-sitter-kotlin` / `tree-sitter-dart` native bindings loading for the current Node ABI and install environment. If they cannot load, the scanner automatically falls back to line-based chunks while import resolution remains available.
 
 ## Acknowledgements
 

@@ -58,11 +58,16 @@
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-c-sharp": "^0.23.1",
     "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-dart": "^1.0.0",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-java": "0.23.5",
     "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-php": "^0.24.2",
     "tree-sitter-python": "0.25.0",
+    "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.24.0",
+    "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "0.23.2",
     "zod": "^4.2.1"
   },
@@ -83,11 +88,16 @@
       "tree-sitter-c",
       "tree-sitter-c-sharp",
       "tree-sitter-cpp",
+      "tree-sitter-dart",
       "tree-sitter-go",
       "tree-sitter-java",
       "tree-sitter-javascript",
+      "tree-sitter-kotlin",
+      "tree-sitter-php",
       "tree-sitter-python",
+      "tree-sitter-ruby",
       "tree-sitter-rust",
+      "tree-sitter-swift",
       "tree-sitter-typescript"
     ]
   }

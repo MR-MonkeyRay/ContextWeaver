@@ -30,3 +30,18 @@ export function commonPrefixLength(path1: string, path2: string): number {
   }
   return count;
 }
+
+/**
+ * 匹配仓库根相对路径，允许精确匹配或以路径段边界结尾。
+ */
+export function matchesRootRelativePath(filePath: string, targetPath: string): boolean {
+  return filePath === targetPath || filePath.endsWith(`/${targetPath}`);
+}
+
+/**
+ * 匹配仓库根相对目录，允许目录位于根部或路径段边界之后。
+ */
+export function containsRootRelativeDir(filePath: string, targetDir: string): boolean {
+  const normalizedDir = targetDir.replace(/\/+$/, '');
+  return filePath.startsWith(`${normalizedDir}/`) || filePath.includes(`/${normalizedDir}/`);
+}

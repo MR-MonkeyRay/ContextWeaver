@@ -2,35 +2,36 @@
  * C# 解析策略 (命名空间→路径映射 + 后缀匹配)
  */
 
-import { commonPrefixLength, type ImportResolver } from './types.js';
+import { commonPrefixLength, type ImportResolver, matchesRootRelativePath } from './types.js';
 
 export class CSharpResolver implements ImportResolver {
   supports(filePath: string): boolean {
-    return filePath.endsWith('.cs');
+    return filePath.endsWith('.cs') || filePath.endsWith('.csx');
   }
 
   extract(content: string): string[] {
     const imports: string[] = [];
-    // 匹配: using Namespace.Type; 或 using Alias = Namespace.Type;
-    // 不匹配: using static, global using
-    const pattern = /^\s*using\s+(?!static\s)(?!global\s)(?:\w+\s*=\s*)?([\w.]+);/gm;
+
+    // 匹配 global using、using static、using Alias = Target、global:: 前缀和 @ 标识符。
+    const pattern =
+      /^\s*(?:global\s+)?using\s+(?:static\s+)?(?:(?:@?\w+)\s*=\s*)?((?:global::)?@?\w+(?:(?:\.|::)@?\w+)*);/gm;
     for (const match of content.matchAll(pattern)) {
-      imports.push(match[1]);
+      imports.push(this.normalizeImport(match[1]));
     }
     return imports;
   }
 
   resolve(importStr: string, currentFile: string, allFiles: Set<string>): string | null {
-    // C# using: Namespace.Type -> Namespace/Type.cs
-    // 命名空间通常与目录结构对应
+    const normalizedImport = this.normalizeImport(importStr);
+    if (!normalizedImport) return null;
 
     // 将命名空间转换为路径
-    const namespacePath = importStr.replace(/\./g, '/');
-    const suffix = `/${namespacePath}.cs`;
+    const namespacePath = normalizedImport.replace(/::/g, '.').replace(/\./g, '/');
+    const targetPaths = [`${namespacePath}.cs`, `${namespacePath}.csx`];
 
     const candidates: string[] = [];
     for (const filePath of allFiles) {
-      if (filePath.endsWith(suffix)) {
+      if (targetPaths.some((targetPath) => matchesRootRelativePath(filePath, targetPath))) {
         candidates.push(filePath);
       }
     }
@@ -38,12 +39,12 @@ export class CSharpResolver implements ImportResolver {
     // 回退策略：尝试匹配最后一个类型名
     // 例如 System.Collections.Generic.List -> 找 List.cs
     if (candidates.length === 0) {
-      const parts = importStr.split('.');
+      const parts = normalizedImport.replace(/::/g, '.').split('.');
       const typeName = parts[parts.length - 1];
-      const typeSuffix = `/${typeName}.cs`;
+      const typePaths = [`${typeName}.cs`, `${typeName}.csx`];
 
       for (const filePath of allFiles) {
-        if (filePath.endsWith(typeSuffix)) {
+        if (typePaths.some((targetPath) => matchesRootRelativePath(filePath, targetPath))) {
           candidates.push(filePath);
         }
       }
@@ -70,5 +71,12 @@ export class CSharpResolver implements ImportResolver {
     }
 
     return bestCandidate;
+  }
+
+  private normalizeImport(importStr: string): string {
+    return importStr
+      .replace(/^global::/, '')
+      .replace(/@(?=\w)/g, '')
+      .trim();
   }
 }
