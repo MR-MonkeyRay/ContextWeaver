@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout Code (tag on dispatch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
@@ -48,15 +48,15 @@ jobs:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
+          package-manager-cache: false
       
-      - name: Upgrade npm for Trusted Publishing (OIDC)
+      - name: Install npm for Trusted Publishing (OIDC)
         run: |
-          npm i -g npm@^11.5.1
+          npm i -g npm@^11.10.0
           npm -v
           node -v
           pnpm -v
@@ -87,9 +87,7 @@ jobs:
 
       - name: Publish to NPM
         if: github.event_name != 'workflow_dispatch' || steps.npmcheck.outputs.exists != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --no-git-checks --access public --provenance
+        run: npm publish --no-git-checks --access public
 
       # push tag 和手动重跑都创建/更新 GitHub Release（手动重跑时显式指定 tag_name）
       - name: Create GitHub Release

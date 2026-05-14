@@ -14,8 +14,8 @@
   },
   "private": false,
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "type": "module",
   "bin": {
