@@ -1,18 +1,22 @@
 {
-  "name": "@haurynlee/contextweaver",
-  "version": "1.3.2",
+  "name": "@monkeyray/contextweaver",
+  "version": "1.3.3",
   "description": "Context engine for AI coding agents with CLI retrieval, prompt-context preparation, and bundled Skills",
   "license": "MIT",
-  "author": "haurynlee",
+  "author": "monkeyray",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GowayLee/ContextWeaver.git"
+    "url": "git+https://github.com/MR-MonkeyRay/ContextWeaver.git"
   },
-  "homepage": "https://github.com/GowayLee/ContextWeaver#readme",
+  "homepage": "https://github.com/MR-MonkeyRay/ContextWeaver#readme",
   "bugs": {
-    "url": "https://github.com/GowayLee/ContextWeaver/issues"
+    "url": "https://github.com/MR-MonkeyRay/ContextWeaver/issues"
   },
   "private": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "type": "module",
   "bin": {
     "contextweaver": "dist/index.js",

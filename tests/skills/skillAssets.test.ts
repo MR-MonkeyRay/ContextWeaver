@@ -45,7 +45,8 @@ describe('skill assets', () => {
 
     expect(content).toContain('---');
     expect(content).toContain('name: using-contextweaver');
-    expect(content).toContain('description: Use when');
+    expect(content).toContain('description: >-');
+    expect(content).toContain('需要理解代码库中功能如何实现');
     expect(content).toContain('使用 ContextWeaver');
     expect(content).toContain('contextweaver search');
     expect(content).not.toContain('contextweaver_codebase-retrieval');

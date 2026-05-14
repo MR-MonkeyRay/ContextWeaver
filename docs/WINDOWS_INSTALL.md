@@ -3,13 +3,13 @@
 ContextWeaver depends on native Node packages for local storage and parsing. Most Windows users should install it normally:
 
 ```powershell
-npm install -g @haurynlee/contextweaver
+npm install -g @monkeyray/contextweaver
 ```
 
 or:
 
 ```powershell
-pnpm add -g @haurynlee/contextweaver
+pnpm add -g @monkeyray/contextweaver
 ```
 
 When prebuilt binaries are available for your Node version and CPU architecture, the install should not need a local C++ build.
@@ -29,13 +29,13 @@ Then retry the normal global install command. This fallback may be used by packa
 Only use this path when you cannot install build tools and understand the tradeoff. You can install with lifecycle scripts disabled, but native packages may be missing or unusable:
 
 ```powershell
-npm install -g @haurynlee/contextweaver --ignore-scripts
+npm install -g @monkeyray/contextweaver --ignore-scripts
 ```
 
 or:
 
 ```powershell
-pnpm add -g @haurynlee/contextweaver --ignore-scripts
+pnpm add -g @monkeyray/contextweaver --ignore-scripts
 ```
 
 After that, you must manually provide working native artifacts for the installed package versions. The affected packages can include `better-sqlite3`, `@keqingmoe/tree-sitter`, and tree-sitter grammar packages under the global package installation. Do not assume an upstream `tree-sitter` runtime package path; this project uses `@keqingmoe/tree-sitter`.

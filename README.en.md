@@ -30,7 +30,7 @@
 ## Install
 
 ```bash
-npm install -g @haurynlee/contextweaver
+npm install -g @monkeyray/contextweaver
 ```
 
 Windows installs normally use available prebuilt native dependencies; see [Windows install notes](./docs/WINDOWS_INSTALL.md) for build-tool fallback and advanced no-build options.
@@ -167,4 +167,4 @@ ContextWeaver uses Tree-sitter to provide native AST parsing support for the fol
 
 ## License
 
-[MIT](https://github.com/GowayLee/ContextWeaver/blob/main/LICENSE)
+[MIT](./LICENSE)

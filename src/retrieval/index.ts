@@ -146,7 +146,7 @@ function findPackageRoot(startDir: string): string | null {
         const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
           name?: string;
         };
-        if (packageJson.name === '@haurynlee/contextweaver') {
+        if (packageJson.name === '@monkeyray/contextweaver') {
           return currentDir;
         }
       } catch {

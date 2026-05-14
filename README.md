@@ -30,7 +30,7 @@
 ## 安装
 
 ```bash
-npm install -g @haurynlee/contextweaver
+npm install -g @monkeyray/contextweaver
 ```
 
 Windows 安装通常会使用可用的预编译原生依赖；如需本地构建工具或无构建安装路径，见 [Windows 安装说明](./docs/WINDOWS_INSTALL.md)。
@@ -177,4 +177,4 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析；
 
 ## License
 
-[MIT](https://github.com/GowayLee/ContextWeaver/blob/main/LICENSE)
+[MIT](./LICENSE)
