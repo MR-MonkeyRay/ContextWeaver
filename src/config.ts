@@ -58,10 +58,26 @@ export interface EmbeddingConfig {
   model: string;
   batchSize: number;
   maxConcurrency: number;
+  /** 网络/超时类错误重试次数 */
+  networkRetries: number;
+  /** 重试基础等待时间（毫秒） */
+  retryBaseDelayMs: number;
+  /** 每次重试额外增加的等待时间（毫秒）；0 表示关闭递增等待 */
+  retryIntervalIncrementMs: number;
+  /** 单次 Embedding 请求超时时间（毫秒）；0 表示不启用显式超时 */
+  requestTimeoutMs: number;
+  /** 每个索引窗口最多处理的 embedding item 数 */
+  windowSize: number;
   /** 向量维度 */
   dimensions: number;
   /** 模型最大输入 token 数，超过此值的文本会在请求前截断 */
   maxInputTokens: number;
+  /** 语义分片最大大小 */
+  chunkMaxSize: number;
+  /** 语义分片最小大小 */
+  chunkMinSize: number;
+  /** 语义分片重叠大小 */
+  chunkOverlap: number;
 }
 
 export interface RerankerConfig {
@@ -69,6 +85,15 @@ export interface RerankerConfig {
   baseUrl: string;
   model: string;
   topN: number;
+}
+
+export interface ChunkingConfig {
+  /** 语义分片最大大小 */
+  chunkMaxSize: number;
+  /** 语义分片最小大小 */
+  chunkMinSize: number;
+  /** 语义分片重叠大小 */
+  chunkOverlap: number;
 }
 
 // API 配置获取
@@ -144,6 +169,14 @@ export function getEmbeddingConfig(): EmbeddingConfig {
   const model = process.env.EMBEDDINGS_MODEL;
   const batchSize = parseInt(process.env.EMBEDDINGS_BATCH_SIZE || '10', 10);
   const maxConcurrency = parseInt(process.env.EMBEDDINGS_MAX_CONCURRENCY || '10', 10);
+  const networkRetries = parseInt(process.env.EMBEDDINGS_NETWORK_RETRIES || '5', 10);
+  const retryBaseDelayMs = parseInt(process.env.EMBEDDINGS_RETRY_BASE_DELAY_MS || '1000', 10);
+  const retryIntervalIncrementMs = parseInt(
+    process.env.EMBEDDINGS_RETRY_INTERVAL_INCREMENT_MS || '1000',
+    10,
+  );
+  const requestTimeoutMs = parseInt(process.env.EMBEDDINGS_REQUEST_TIMEOUT_MS || '60000', 10);
+  const windowSize = parseInt(process.env.EMBEDDINGS_WINDOW_SIZE || '50', 10);
 
   if (!apiKey) {
     throw new Error('EMBEDDINGS_API_KEY 环境变量未设置');
@@ -157,15 +190,37 @@ export function getEmbeddingConfig(): EmbeddingConfig {
 
   const dimensions = parseInt(process.env.EMBEDDINGS_DIMENSIONS || '1024', 10);
   const maxInputTokens = parseInt(process.env.EMBEDDINGS_MAX_INPUT_TOKENS || '8192', 10);
+  const chunkingConfig = getChunkingConfig();
 
   return {
     apiKey,
     baseUrl,
     model,
     batchSize: Number.isNaN(batchSize) || batchSize < 1 ? 10 : batchSize,
-    maxConcurrency: Number.isNaN(maxConcurrency) ? 4 : maxConcurrency,
+    maxConcurrency: Number.isNaN(maxConcurrency) || maxConcurrency < 1 ? 4 : maxConcurrency,
+    networkRetries: Number.isNaN(networkRetries) || networkRetries < 0 ? 5 : networkRetries,
+    retryBaseDelayMs: Number.isNaN(retryBaseDelayMs) || retryBaseDelayMs < 0 ? 1000 : retryBaseDelayMs,
+    retryIntervalIncrementMs:
+      Number.isNaN(retryIntervalIncrementMs) || retryIntervalIncrementMs < 0
+        ? 1000
+        : retryIntervalIncrementMs,
+    requestTimeoutMs: Number.isNaN(requestTimeoutMs) || requestTimeoutMs < 0 ? 60000 : requestTimeoutMs,
+    windowSize: Number.isNaN(windowSize) || windowSize < 1 ? 50 : windowSize,
     dimensions: Number.isNaN(dimensions) ? 1024 : dimensions,
     maxInputTokens: Number.isNaN(maxInputTokens) ? 8192 : maxInputTokens,
+    ...chunkingConfig,
+  };
+}
+
+export function getChunkingConfig(): ChunkingConfig {
+  const chunkMaxSize = parseInt(process.env.CW_CHUNK_MAX_SIZE || '1000', 10);
+  const chunkMinSize = parseInt(process.env.CW_CHUNK_MIN_SIZE || '50', 10);
+  const chunkOverlap = parseInt(process.env.CW_CHUNK_OVERLAP || '20', 10);
+
+  return {
+    chunkMaxSize: Number.isNaN(chunkMaxSize) || chunkMaxSize < 1 ? 1000 : chunkMaxSize,
+    chunkMinSize: Number.isNaN(chunkMinSize) || chunkMinSize < 1 ? 50 : chunkMinSize,
+    chunkOverlap: Number.isNaN(chunkOverlap) || chunkOverlap < 0 ? 20 : chunkOverlap,
   };
 }
 

@@ -11,8 +11,16 @@ function createClient(overrides?: Partial<ConstructorParameters<typeof Embedding
     baseUrl: 'https://example.com/embeddings',
     model: 'test-model',
     maxConcurrency: 1,
+    networkRetries: 0,
+    retryBaseDelayMs: 0,
+    retryIntervalIncrementMs: 0,
+    requestTimeoutMs: 0,
+    windowSize: 50,
     dimensions: 3,
     maxInputTokens: 1000,
+    chunkMaxSize: 1000,
+    chunkMinSize: 50,
+    chunkOverlap: 20,
     ...overrides,
   });
 }

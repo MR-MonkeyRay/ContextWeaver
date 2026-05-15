@@ -45,6 +45,12 @@ export async function processEmbeddingBatch(options: {
   };
   const requestContext = createRequestContext(config, batchSize, texts.length);
   const controller = new AbortController();
+  const timeout =
+    config.requestTimeoutMs > 0
+      ? setTimeout(() => {
+          controller.abort(new Error(`Embedding 请求超时: ${config.requestTimeoutMs}ms`));
+        }, config.requestTimeoutMs)
+      : null;
   session.controllers.add(controller);
 
   try {
@@ -105,6 +111,9 @@ export async function processEmbeddingBatch(options: {
       ),
     });
   } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
     session.controllers.delete(controller);
   }
 }

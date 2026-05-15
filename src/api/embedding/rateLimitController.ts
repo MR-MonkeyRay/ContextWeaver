@@ -20,6 +20,7 @@ export class RateLimitController {
   private readonly successesPerConcurrencyIncrease = 3;
   private readonly minBackoffMs = 5000;
   private readonly maxBackoffMs = 60000;
+  private readonly maxNetworkCooldownMs = 15000;
 
   constructor(maxConcurrency: number) {
     this.maxConcurrency = maxConcurrency;
@@ -102,6 +103,48 @@ export class RateLimitController {
     resumeResolve();
 
     logger.info({ waitMs: this.backoffMs }, '速率限制：恢复请求');
+  }
+
+  async triggerNetworkCooldown(delayMs: number): Promise<number> {
+    if (delayMs <= 0) {
+      return 0;
+    }
+
+    if (this.isPaused && this.pausePromise) {
+      logger.debug('网络冷却：等待现有暂停结束');
+      await this.pausePromise;
+      return 0;
+    }
+
+    this.isPaused = true;
+    this.consecutiveSuccesses = 0;
+
+    const previousConcurrency = this.currentConcurrency;
+    this.currentConcurrency = Math.max(1, Math.floor(this.currentConcurrency / 2));
+    const cooldownMs = Math.min(delayMs, this.maxNetworkCooldownMs);
+
+    logger.warn(
+      {
+        cooldownMs,
+        previousConcurrency,
+        newConcurrency: this.currentConcurrency,
+        activeRequests: this.activeRequests,
+      },
+      '网络错误：降低并发并短暂冷却',
+    );
+
+    let resumeResolve: () => void = () => {};
+    this.pausePromise = new Promise<void>((resolve) => {
+      resumeResolve = resolve;
+    });
+
+    await sleep(cooldownMs);
+    this.isPaused = false;
+    this.pausePromise = null;
+    resumeResolve();
+
+    logger.info({ waitMs: cooldownMs }, '网络冷却：恢复请求');
+    return cooldownMs;
   }
 
   getStatus(): RateLimitStatus {

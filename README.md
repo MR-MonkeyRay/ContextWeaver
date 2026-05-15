@@ -52,8 +52,16 @@ EMBEDDINGS_BASE_URL=https://api.siliconflow.cn/v1/embeddings
 EMBEDDINGS_MODEL=BAAI/bge-m3
 EMBEDDINGS_BATCH_SIZE=10
 EMBEDDINGS_MAX_CONCURRENCY=10
+EMBEDDINGS_NETWORK_RETRIES=5
+EMBEDDINGS_RETRY_BASE_DELAY_MS=1000
+EMBEDDINGS_RETRY_INTERVAL_INCREMENT_MS=1000
+EMBEDDINGS_REQUEST_TIMEOUT_MS=60000
+EMBEDDINGS_WINDOW_SIZE=50
 EMBEDDINGS_DIMENSIONS=1024
 EMBEDDINGS_MAX_INPUT_TOKENS=8192
+CW_CHUNK_MAX_SIZE=1000
+CW_CHUNK_MIN_SIZE=50
+CW_CHUNK_OVERLAP=20
 
 RERANK_API_KEY=your-api-key-here
 RERANK_BASE_URL=https://api.siliconflow.cn/v1/rerank
@@ -64,6 +72,14 @@ RERANK_TOP_N=20
 | 环境变量                | 默认值 | 说明                                                    |
 | ----------------------- | ------ | ------------------------------------------------------- |
 | `EMBEDDINGS_BATCH_SIZE` | `10`   | 单次 Embedding API 请求的文本条数，非法值会回退到默认值 |
+| `EMBEDDINGS_NETWORK_RETRIES` | `5` | 网络/超时类错误重试次数，`0` 表示不重试 |
+| `EMBEDDINGS_RETRY_BASE_DELAY_MS` | `1000` | 重试基础等待时间（毫秒） |
+| `EMBEDDINGS_RETRY_INTERVAL_INCREMENT_MS` | `1000` | 每次重试额外增加的等待时间（毫秒），设为 `0` 可关闭递增等待 |
+| `EMBEDDINGS_REQUEST_TIMEOUT_MS` | `60000` | 单次 Embedding 请求超时（毫秒），`0` 表示不启用显式超时 |
+| `EMBEDDINGS_WINDOW_SIZE` | `50` | 索引时每个窗口最多处理的 Embedding item 数 |
+| `CW_CHUNK_MAX_SIZE` | `1000` | 语义分片最大大小 |
+| `CW_CHUNK_MIN_SIZE` | `50` | 语义分片最小大小 |
+| `CW_CHUNK_OVERLAP` | `20` | 语义分片重叠大小 |
 
 ## 项目索引配置
 

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import pLimit from 'p-limit';
+import { getChunkingConfig } from '../config.js';
 import {
   getParser,
   isLanguageSupported,
@@ -75,11 +76,19 @@ function getAdaptiveConcurrency(): number {
 /**
  * 分片器单例
  */
-const splitter = new SemanticSplitter({
-  maxChunkSize: 500,
-  minChunkSize: 50,
-  chunkOverlap: 40, // 混合检索(BM25+向量+rerank)下的保守 overlap
-});
+let splitter: SemanticSplitter | null = null;
+
+function getSplitter(): SemanticSplitter {
+  if (!splitter) {
+    const config = getChunkingConfig();
+    splitter = new SemanticSplitter({
+      maxChunkSize: config.chunkMaxSize,
+      minChunkSize: config.chunkMinSize,
+      chunkOverlap: config.chunkOverlap,
+    });
+  }
+  return splitter;
+}
 
 export type SkipReasonBucket =
   | 'large_file'
@@ -259,7 +268,7 @@ async function processFile(
         const parser = await getParser(language);
         if (parser) {
           const tree = parser.parse(content);
-          chunks = splitter.split(tree, content, relPath, language);
+          chunks = getSplitter().split(tree, content, relPath, language);
         }
       } catch (err) {
         const error = err as { message?: string };
@@ -270,7 +279,7 @@ async function processFile(
 
     // 兜底分片：对 FALLBACK_LANGS 语言，如果 AST 分片失败或返回空，使用行分片
     if (chunks.length === 0 && FALLBACK_LANGS.has(language)) {
-      chunks = splitter.splitPlainText(content, relPath, language);
+      chunks = getSplitter().splitPlainText(content, relPath, language);
     }
 
     const status = known ? 'modified' : 'added';

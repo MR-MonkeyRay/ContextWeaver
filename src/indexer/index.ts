@@ -44,6 +44,22 @@ interface FileToIndex {
   chunks: ProcessedChunk[];
 }
 
+interface IndexedWindow {
+  filesToUpsert: Array<{
+    path: string;
+    hash: string;
+    records: ChunkRecord[];
+  }>;
+  ftsChunks: Array<{
+    chunkId: string;
+    filePath: string;
+    chunkIndex: number;
+    breadcrumb: string;
+    content: string;
+  }>;
+  successFiles: Array<{ path: string; hash: string }>;
+}
+
 // ===========================================
 // Indexer 类
 // ===========================================
@@ -185,7 +201,142 @@ export class Indexer {
       return { success: 0, errors: 0 };
     }
 
-    // ===== 阶段 1: 收集所有需要 embedding 的文本 =====
+    const totalItems = files.reduce((sum, file) => sum + file.chunks.length, 0);
+
+    if (totalItems === 0) {
+      return { success: 0, errors: 0 };
+    }
+
+    const { batchSize, windowSize } = this.embeddingClient.getConfig();
+    const windows = this.buildIndexWindows(files, windowSize);
+    logger.info(
+      { count: totalItems, files: files.length, batchSize, windowSize, windows: windows.length },
+      '开始窗口化批量 Embedding',
+    );
+
+    let completedItems = 0;
+    let success = 0;
+    let errors = 0;
+    let firstEmbeddingError: unknown = null;
+
+    for (const windowFiles of windows) {
+      const windowItems = windowFiles.reduce((sum, file) => sum + file.chunks.length, 0);
+      let windowCompleted = 0;
+
+      try {
+        const indexedWindow = await this.indexWindow(windowFiles, batchSize, (completed, total) => {
+          const mappedCompleted = Math.min(windowItems, Math.floor((completed / total) * windowItems));
+          windowCompleted = Math.max(windowCompleted, mappedCompleted);
+          onProgress?.(completedItems + windowCompleted, totalItems);
+        });
+
+        await this.persistWindow(db, indexedWindow);
+        completedItems += windowItems;
+        onProgress?.(completedItems, totalItems);
+        success += indexedWindow.successFiles.length;
+        logger.info(
+          {
+            files: indexedWindow.successFiles.length,
+            chunks: indexedWindow.ftsChunks.length,
+            completedItems: completedItems,
+            totalItems,
+          },
+          '索引窗口完成',
+        );
+      } catch (err) {
+        const error = err as { message?: string; stack?: string };
+        logger.error(
+          { files: windowFiles.length, chunks: windowItems, error: error.message, stack: error.stack },
+          '索引窗口失败',
+        );
+        clearVectorIndexHash(
+          db,
+          windowFiles.map((f) => f.path),
+        );
+        errors += windowFiles.length;
+        firstEmbeddingError ??= err;
+        completedItems += windowItems;
+        onProgress?.(completedItems, totalItems);
+
+        if (!this.canContinueAfterWindowFailure(err)) {
+          break;
+        }
+      }
+    }
+
+    if (firstEmbeddingError) {
+      if (success > 0) {
+        logger.warn(
+          { success, errors },
+          '部分索引窗口已成功写入，失败窗口将在下次索引时通过自愈补索引',
+        );
+      }
+      const err = firstEmbeddingError;
+      if (err instanceof EmbeddingFatalError) {
+        const upstreamMessage = err.diagnostics.upstreamMessage || err.message || '未知错误';
+        throw new EmbeddingFatalError(`向量嵌入阶段失败: ${upstreamMessage}`, {
+          cause: err,
+          diagnostics: err.diagnostics,
+        });
+      }
+      const error = err as { message?: string };
+      throw new EmbeddingFatalError(`向量嵌入阶段失败: ${error.message || '未知错误'}`, {
+        cause: err,
+      });
+    }
+
+    logger.info({ success, errors }, '批量索引完成');
+    return { success, errors };
+  }
+
+  private canContinueAfterWindowFailure(err: unknown): boolean {
+    if (!(err instanceof EmbeddingFatalError)) {
+      return false;
+    }
+
+    if (err.diagnostics.category === 'network' || err.diagnostics.category === 'timeout') {
+      return true;
+    }
+
+    return typeof err.diagnostics.httpStatus === 'number' && err.diagnostics.httpStatus >= 500;
+  }
+
+  private buildIndexWindows(files: FileToIndex[], windowSize: number): FileToIndex[][] {
+    const windows: FileToIndex[][] = [];
+    let currentWindow: FileToIndex[] = [];
+    let currentItemCount = 0;
+
+    for (const file of files) {
+      const itemCount = file.chunks.length;
+
+      if (currentWindow.length > 0 && currentItemCount + itemCount > windowSize) {
+        windows.push(currentWindow);
+        currentWindow = [];
+        currentItemCount = 0;
+      }
+
+      currentWindow.push(file);
+      currentItemCount += itemCount;
+
+      if (currentItemCount >= windowSize) {
+        windows.push(currentWindow);
+        currentWindow = [];
+        currentItemCount = 0;
+      }
+    }
+
+    if (currentWindow.length > 0) {
+      windows.push(currentWindow);
+    }
+
+    return windows;
+  }
+
+  private async indexWindow(
+    files: FileToIndex[],
+    batchSize: number,
+    onProgress?: (completed: number, total: number) => void,
+  ): Promise<IndexedWindow> {
     const allTexts: string[] = [];
     const globalIndexByFileChunk: number[][] = [];
 
@@ -199,154 +350,97 @@ export class Indexer {
       }
     }
 
-    if (allTexts.length === 0) {
-      return { success: 0, errors: 0 };
-    }
+    const results = await this.embeddingClient.embedBatch(allTexts, batchSize, onProgress);
+    const embeddings = results.map((r) => r.embedding);
 
-    // ===== 阶段 2: 批量获取 embeddings =====
-    const { batchSize } = this.embeddingClient.getConfig();
-    logger.info({ count: allTexts.length, files: files.length, batchSize }, '开始批量 Embedding');
-
-    let embeddings: number[][];
-    try {
-      // 传递进度回调给 embedBatch，让它在每个 API 批次完成时报告进度
-      const results = await this.embeddingClient.embedBatch(allTexts, batchSize, onProgress);
-      embeddings = results.map((r) => r.embedding);
-    } catch (err) {
-      const error = err as { message?: string; stack?: string };
-      logger.error({ error: error.message, stack: error.stack }, 'Embedding 失败');
-      clearVectorIndexHash(
-        db,
-        files.map((f) => f.path),
-      );
-
-      const diagnostics = err instanceof EmbeddingFatalError ? err.diagnostics : undefined;
-      const upstreamMessage = diagnostics?.upstreamMessage || error.message || '未知错误';
-      throw new EmbeddingFatalError(`向量嵌入阶段失败: ${upstreamMessage}`, {
-        cause: err,
-        diagnostics,
-      });
-    }
-
-    // ===== 阶段 3: 组装所有 ChunkRecords =====
-    const filesToUpsert: Array<{
-      path: string;
-      hash: string;
-      records: ChunkRecord[];
-    }> = [];
-    const allFtsChunks: Array<{
-      chunkId: string;
-      filePath: string;
-      chunkIndex: number;
-      breadcrumb: string;
-      content: string;
-    }> = [];
-    const successFiles: Array<{ path: string; hash: string }> = [];
-    const errorFiles: string[] = [];
+    const filesToUpsert: IndexedWindow['filesToUpsert'] = [];
+    const ftsChunks: IndexedWindow['ftsChunks'] = [];
+    const successFiles: IndexedWindow['successFiles'] = [];
 
     for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
       const file = files[fileIdx];
+      const records: ChunkRecord[] = [];
 
-      try {
-        const records: ChunkRecord[] = [];
+      for (let chunkIdx = 0; chunkIdx < file.chunks.length; chunkIdx++) {
+        const chunk = file.chunks[chunkIdx];
+        const globalIdx = globalIndexByFileChunk[fileIdx][chunkIdx];
 
-        for (let chunkIdx = 0; chunkIdx < file.chunks.length; chunkIdx++) {
-          const chunk = file.chunks[chunkIdx];
-          const globalIdx = globalIndexByFileChunk[fileIdx][chunkIdx];
-
-          if (globalIdx === undefined) {
-            throw new Error(`找不到 chunk 的 embedding: ${file.path}#${chunkIdx}`);
-          }
-
-          const record: ChunkRecord = {
-            chunk_id: `${file.path}#${file.hash}#${chunkIdx}`,
-            file_path: file.path,
-            file_hash: file.hash,
-            chunk_index: chunkIdx,
-            vector: embeddings[globalIdx],
-            display_code: chunk.displayCode,
-            vector_text: chunk.vectorText,
-            language: chunk.metadata.language,
-            breadcrumb: chunk.metadata.contextPath.join(' > '),
-            start_index: chunk.metadata.startIndex,
-            end_index: chunk.metadata.endIndex,
-            raw_start: chunk.metadata.rawSpan.start,
-            raw_end: chunk.metadata.rawSpan.end,
-            vec_start: chunk.metadata.vectorSpan.start,
-            vec_end: chunk.metadata.vectorSpan.end,
-          };
-
-          records.push(record);
-
-          // 收集 FTS 数据
-          allFtsChunks.push({
-            chunkId: record.chunk_id,
-            filePath: record.file_path,
-            chunkIndex: record.chunk_index,
-            breadcrumb: record.breadcrumb,
-            content: `${record.breadcrumb}\n${record.display_code}`,
-          });
+        if (globalIdx === undefined) {
+          throw new Error(`找不到 chunk 的 embedding: ${file.path}#${chunkIdx}`);
         }
 
-        filesToUpsert.push({ path: file.path, hash: file.hash, records });
-        successFiles.push({ path: file.path, hash: file.hash });
-      } catch (err) {
-        const error = err as { message?: string; stack?: string };
-        logger.error(
-          { path: file.path, error: error.message, stack: error.stack },
-          '组装 ChunkRecord 失败',
-        );
-        errorFiles.push(file.path);
+        const record: ChunkRecord = {
+          chunk_id: `${file.path}#${file.hash}#${chunkIdx}`,
+          file_path: file.path,
+          file_hash: file.hash,
+          chunk_index: chunkIdx,
+          vector: embeddings[globalIdx],
+          display_code: chunk.displayCode,
+          vector_text: chunk.vectorText,
+          language: chunk.metadata.language,
+          breadcrumb: chunk.metadata.contextPath.join(' > '),
+          start_index: chunk.metadata.startIndex,
+          end_index: chunk.metadata.endIndex,
+          raw_start: chunk.metadata.rawSpan.start,
+          raw_end: chunk.metadata.rawSpan.end,
+          vec_start: chunk.metadata.vectorSpan.start,
+          vec_end: chunk.metadata.vectorSpan.end,
+        };
+
+        records.push(record);
+        ftsChunks.push({
+          chunkId: record.chunk_id,
+          filePath: record.file_path,
+          chunkIndex: record.chunk_index,
+          breadcrumb: record.breadcrumb,
+          content: `${record.breadcrumb}\n${record.display_code}`,
+        });
       }
+
+      filesToUpsert.push({ path: file.path, hash: file.hash, records });
+      successFiles.push({ path: file.path, hash: file.hash });
     }
 
-    // ===== 阶段 4: 批量写入 LanceDB =====
-    if (filesToUpsert.length > 0) {
+    return {
+      filesToUpsert,
+      ftsChunks,
+      successFiles,
+    };
+  }
+
+  private async persistWindow(db: Database.Database, indexedWindow: IndexedWindow): Promise<void> {
+    if (indexedWindow.filesToUpsert.length > 0) {
       try {
-        await this.vectorStore?.batchUpsertFiles(filesToUpsert);
+        await this.vectorStore?.batchUpsertFiles(indexedWindow.filesToUpsert);
         logger.info(
-          { files: filesToUpsert.length, chunks: allFtsChunks.length },
-          'LanceDB 批量写入完成',
+          { files: indexedWindow.filesToUpsert.length, chunks: indexedWindow.ftsChunks.length },
+          'LanceDB 窗口写入完成',
         );
       } catch (err) {
         const error = err as { message?: string; stack?: string };
-        logger.error({ error: error.message, stack: error.stack }, 'LanceDB 批量写入失败');
-        // 所有文件都失败
+        logger.error({ error: error.message, stack: error.stack }, 'LanceDB 窗口写入失败');
         clearVectorIndexHash(
           db,
-          files.map((f) => f.path),
+          indexedWindow.filesToUpsert.map((f) => f.path),
         );
-        return { success: 0, errors: files.length };
+        throw err;
       }
     }
 
-    // ===== 阶段 5: 批量更新 FTS 索引 =====
-    if (isChunksFtsInitialized(db) && allFtsChunks.length > 0) {
+    if (isChunksFtsInitialized(db) && indexedWindow.ftsChunks.length > 0) {
       try {
-        // 批量删除旧 FTS 记录
-        const pathsToDelete = filesToUpsert.map((f) => f.path);
+        const pathsToDelete = indexedWindow.filesToUpsert.map((f) => f.path);
         batchDeleteFileChunksFts(db, pathsToDelete);
-        // 批量插入新 FTS 记录
-        batchUpsertChunkFts(db, allFtsChunks);
-        logger.info(
-          { files: pathsToDelete.length, chunks: allFtsChunks.length },
-          'FTS 批量更新完成',
-        );
+        batchUpsertChunkFts(db, indexedWindow.ftsChunks);
       } catch (err) {
         const error = err as { message?: string };
-        logger.warn({ error: error.message }, 'FTS 批量更新失败（向量索引已成功）');
+        logger.warn({ error: error.message }, 'FTS 窗口更新失败（向量索引已成功）');
       }
     }
 
-    // ===== 阶段 6: 更新 SQLite 元数据 =====
-    if (successFiles.length > 0) {
-      batchUpdateVectorIndexHash(db, successFiles);
+    if (indexedWindow.successFiles.length > 0) {
+      batchUpdateVectorIndexHash(db, indexedWindow.successFiles);
     }
-
-    // 汇总日志
-    logger.info({ success: successFiles.length, errors: errorFiles.length }, '批量索引完成');
-
-    return { success: successFiles.length, errors: errorFiles.length };
   }
 
   /**

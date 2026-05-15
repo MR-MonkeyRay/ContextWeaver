@@ -40,6 +40,7 @@ export function isTimeoutError(err: unknown): boolean {
   return (
     name === 'AbortError' ||
     code === 'ETIMEDOUT' ||
+    message.includes('超时') ||
     message.includes('timeout') ||
     message.includes('timed out')
   );

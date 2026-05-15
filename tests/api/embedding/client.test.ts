@@ -18,8 +18,16 @@ function createClient(overrides?: Partial<ConstructorParameters<typeof Embedding
     model: 'test-model',
     batchSize: 2,
     maxConcurrency: 1,
+    networkRetries: 3,
+    retryBaseDelayMs: 0,
+    retryIntervalIncrementMs: 0,
+    requestTimeoutMs: 0,
+    windowSize: 50,
     dimensions: 3,
     maxInputTokens: 1000,
+    chunkMaxSize: 1000,
+    chunkMinSize: 50,
+    chunkOverlap: 20,
     ...overrides,
   });
 }
@@ -43,6 +51,14 @@ function failureResponse(message: string) {
   } as Response;
 }
 
+function fatalFailureResponse(message: string) {
+  return {
+    ok: false,
+    status: 400,
+    json: async () => ({ error: { message: `Dimension mismatch: ${message}` } }),
+  } as Response;
+}
+
 describe('EmbeddingClient orchestration', () => {
   const originalFetch = global.fetch;
 
@@ -60,12 +76,12 @@ describe('EmbeddingClient orchestration', () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(successResponse(0))
-      .mockResolvedValueOnce(failureResponse('provider exploded'));
+      .mockResolvedValueOnce(fatalFailureResponse('provider exploded'));
     global.fetch = fetchMock;
 
     const client = createClient({ maxConcurrency: 1 });
 
-    await expect(client.embedBatch(['a', 'b', 'c'], 1)).rejects.toThrow('provider exploded');
+    await expect(client.embedBatch(['a', 'b', 'c'], 1)).rejects.toThrow('Dimension mismatch');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -79,13 +95,13 @@ describe('EmbeddingClient orchestration', () => {
             setTimeout(() => resolve(successResponse(0)), 20);
           }),
       )
-      .mockResolvedValueOnce(failureResponse('fatal batch failure'));
+      .mockResolvedValueOnce(fatalFailureResponse('fatal batch failure'));
     global.fetch = fetchMock;
 
     const client = createClient({ maxConcurrency: 2 });
 
     await expect(client.embedBatch(['a', 'b', 'c'], 1, onProgress)).rejects.toThrow(
-      'fatal batch failure',
+      'Dimension mismatch',
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -120,8 +136,16 @@ describe('EmbeddingClient orchestration', () => {
       model: 'test-model',
       batchSize: 2,
       maxConcurrency: 1,
+      networkRetries: 3,
+      retryBaseDelayMs: 0,
+      retryIntervalIncrementMs: 0,
+      requestTimeoutMs: 0,
+      windowSize: 50,
       dimensions: 3,
       maxInputTokens: 1000,
+      chunkMaxSize: 1000,
+      chunkMinSize: 50,
+      chunkOverlap: 20,
     });
 
     await expect(client.embed('hello')).resolves.toEqual([0.1, 0.2, 0.3]);
@@ -153,5 +177,53 @@ describe('EmbeddingClient orchestration', () => {
     expect(processBatchSpy).toHaveBeenCalledTimes(2);
     expect(processBatchSpy.mock.calls[0]?.[2]).toBe(2);
     expect(processBatchSpy.mock.calls[1]?.[2]).toBe(2);
+  });
+
+  it('uses configured increasing retry delay for transient network failures', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      .mockResolvedValueOnce(successResponse(0));
+    global.fetch = fetchMock;
+
+    const client = createClient({
+      networkRetries: 2,
+      retryBaseDelayMs: 100,
+      retryIntervalIncrementMs: 50,
+    });
+    const resultPromise = client.embedBatch(['a'], 1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(150);
+
+    await expect(resultPromise).resolves.toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it('keeps retry delay fixed when interval increment is disabled', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      .mockResolvedValueOnce(successResponse(0));
+    global.fetch = fetchMock;
+
+    const client = createClient({
+      networkRetries: 2,
+      retryBaseDelayMs: 100,
+      retryIntervalIncrementMs: 0,
+    });
+    const resultPromise = client.embedBatch(['a'], 1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(resultPromise).resolves.toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
   });
 });

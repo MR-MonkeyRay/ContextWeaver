@@ -109,8 +109,8 @@ export class EmbeddingClient {
     progress: ProgressTracker,
     session: EmbeddingSession,
   ): Promise<EmbeddingResult[]> {
-    const MAX_NETWORK_RETRIES = 3;
-    const MAX_RATE_LIMIT_RETRIES = 3;
+    const maxTransientRetries = this.config.networkRetries;
+    const maxRateLimitRetries = Math.max(3, this.config.networkRetries);
 
     let networkRetries = 0;
     let rateLimitRetries = 0;
@@ -152,9 +152,12 @@ export class EmbeddingClient {
           errorMessage.includes('rate');
         const timeoutError = isTimeoutError(fatalError?.cause ?? err);
         const networkError = isNetworkError(fatalError?.cause ?? err);
+        const serverError =
+          typeof fatalError?.diagnostics.httpStatus === 'number' &&
+          fatalError.diagnostics.httpStatus >= 500;
 
         if (isRateLimited) {
-          if (rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
+          if (rateLimitRetries < maxRateLimitRetries) {
             rateLimitRetries++;
             this.rateLimiter.releaseForRetry();
             await this.rateLimiter.triggerRateLimit();
@@ -164,22 +167,28 @@ export class EmbeddingClient {
             this.rateLimiter.releaseFailure();
             throw sessionError;
           }
-        } else if (!timeoutError && networkError && networkRetries < MAX_NETWORK_RETRIES) {
+        } else if (
+          (timeoutError || networkError || serverError) &&
+          networkRetries < maxTransientRetries
+        ) {
           networkRetries++;
-          const delayMs = 1000 * 2 ** (networkRetries - 1);
+          const delayMs = this.getRetryDelayMs(networkRetries);
+          const category = timeoutError ? 'timeout' : networkError ? 'network' : 'server_error';
 
           logger.warn(
             {
               error: errorMessage,
+              category,
               retry: networkRetries,
-              maxRetries: MAX_NETWORK_RETRIES,
+              maxRetries: maxTransientRetries,
               delayMs,
             },
-            '网络错误，准备重试',
+            'Embedding 临时错误，准备重试',
           );
 
           this.rateLimiter.releaseForRetry();
-          await sleep(delayMs);
+          const cooldownMs = await this.rateLimiter.triggerNetworkCooldown(delayMs);
+          await sleep(Math.max(0, delayMs - cooldownMs));
         } else {
           const sessionError = this.failSession(session, err);
           this.rateLimiter.releaseFailure();
@@ -192,6 +201,13 @@ export class EmbeddingClient {
         }
       }
     }
+  }
+
+  private getRetryDelayMs(retry: number): number {
+    return (
+      this.config.retryBaseDelayMs +
+      this.config.retryIntervalIncrementMs * Math.max(0, retry - 1)
+    );
   }
 
   private async processBatch(
