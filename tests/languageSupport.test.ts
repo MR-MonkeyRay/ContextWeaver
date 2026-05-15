@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getLanguageSpec } from '../src/chunking/LanguageSpec.js';
 import { getParser, isLanguageSupported } from '../src/chunking/ParserPool.js';
 import { getLanguage, isAllowedExtension } from '../src/scanner/language.js';
@@ -9,6 +9,10 @@ import { KotlinResolver } from '../src/search/resolvers/KotlinResolver.js';
 import { PhpResolver } from '../src/search/resolvers/PhpResolver.js';
 import { RubyResolver } from '../src/search/resolvers/RubyResolver.js';
 import { SwiftResolver } from '../src/search/resolvers/SwiftResolver.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('多语言支持', () => {
   it('识别新增语言与 C# 扩展名', () => {
@@ -39,17 +43,25 @@ describe('多语言支持', () => {
     }
   });
 
-  it('验证新增语言 Tree-sitter 解析器加载能力与降级边界', async () => {
-    for (const language of ['php', 'ruby', 'swift']) {
-      const parser = await getParser(language);
-      expect(parser, `${language} grammar should load in this environment`).not.toBeNull();
-    }
+  it('条件语法包不可用时静默降级且不会重复输出错误', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    for (const language of ['kotlin', 'dart']) {
+    for (const language of ['kotlin', 'swift', 'dart']) {
       const parser = await getParser(language);
-      // Kotlin/Dart 的 npm 包在部分 Node ABI 或缺少原生构建产物时不可加载；
+      const cachedParser = await getParser(language);
+      // Kotlin/Swift/Dart 的 npm 包在部分 Node ABI 或缺少原生构建产物时不可加载；
       // scanner/processor.ts 会在 parser 为 null 时使用行分片兜底。
       expect(parser === null || typeof parser.parse === 'function').toBe(true);
+      expect(cachedParser === parser || cachedParser === null).toBe(true);
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('验证稳定语言 Tree-sitter 解析器加载能力', async () => {
+    for (const language of ['php', 'ruby']) {
+      const parser = await getParser(language);
+      expect(parser, `${language} grammar should load in this environment`).not.toBeNull();
     }
   });
 

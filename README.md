@@ -175,13 +175,13 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析；
 | Kotlin     | 条件支持* | ✅          | `.kt`, `.kts`                 |
 | PHP        | ✅       | ✅          | `.php`                        |
 | Ruby       | ✅       | ✅          | `.rb`                         |
-| Swift      | ✅       | ✅          | `.swift`                      |
+| Swift      | 条件支持* | ✅          | `.swift`                      |
 | Dart       | 条件支持* | ✅          | `.dart`                       |
 | C          | ✅       | ✅          | `.c`, `.h`                    |
 | C++        | ✅       | ✅          | `.cpp`, `.hpp`, `.cc`, `.cxx` |
 | C#         | ✅       | ✅          | `.cs`, `.csx`                 |
 
-* Kotlin/Dart 的 AST 解析取决于 `tree-sitter-kotlin` / `tree-sitter-dart` 原生绑定是否能在当前 Node ABI 与安装环境中加载；加载失败时扫描器会自动退回到行分片，Import 解析仍可用。
+* Kotlin/Swift/Dart 的 AST 解析取决于 `tree-sitter-kotlin` / `tree-sitter-swift` / `tree-sitter-dart` 原生绑定是否存在且能在当前 Node ABI 与安装环境中加载；这些条件语法包不进入默认安装图，缺失或加载失败时扫描器会自动退回到行分片，Import 解析仍可用。
 
 ## 致谢
 

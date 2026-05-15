@@ -40,6 +40,6 @@ pnpm add -g @monkeyray/contextweaver --ignore-scripts
 
 After that, you must manually provide working native artifacts for the installed package versions. The affected packages can include `better-sqlite3`, `@keqingmoe/tree-sitter`, and tree-sitter grammar packages under the global package installation. Do not assume an upstream `tree-sitter` runtime package path; this project uses `@keqingmoe/tree-sitter`.
 
-## Kotlin and Dart Grammars
+## Kotlin, Swift, and Dart Grammars
 
-Kotlin and Dart AST parsing is conditional. If `tree-sitter-kotlin` or `tree-sitter-dart` cannot load for the current Node ABI and install environment, ContextWeaver falls back to line-based chunks while import resolution remains available.
+Kotlin, Swift, and Dart AST parsing is conditional. `tree-sitter-kotlin`, `tree-sitter-swift`, and `tree-sitter-dart` are not part of the default install graph. If one is missing or cannot load for the current Node ABI and install environment, ContextWeaver falls back to line-based chunks while import resolution remains available.

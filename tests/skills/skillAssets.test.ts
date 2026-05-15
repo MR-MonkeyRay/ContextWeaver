@@ -27,16 +27,18 @@ describe('skill assets', () => {
       dependencies?: Record<string, string>;
       files?: string[];
       optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      pnpm?: { peerDependencyRules?: { ignoreMissing?: string[] } };
     };
 
     expect(pkg.files).toContain('skills/**/*');
     expect(pkg.files).toContain('docs/**/*.md');
-    expect(pkg.dependencies).not.toHaveProperty('tree-sitter-dart');
-    expect(pkg.dependencies).not.toHaveProperty('tree-sitter-kotlin');
-    expect(pkg.optionalDependencies).toMatchObject({
-      'tree-sitter-dart': '^1.0.0',
-      'tree-sitter-kotlin': '^0.3.8',
-    });
+    for (const packageName of ['tree-sitter-dart', 'tree-sitter-kotlin', 'tree-sitter-swift']) {
+      expect(pkg.dependencies).not.toHaveProperty(packageName);
+      expect(pkg.optionalDependencies ?? {}).not.toHaveProperty(packageName);
+      expect(pkg.peerDependencies ?? {}).not.toHaveProperty(packageName);
+    }
+    expect(pkg.pnpm?.peerDependencyRules?.ignoreMissing).toContain('tree-sitter');
   });
 
   it('ships a Chinese using-contextweaver skill backed by a local script', async () => {

@@ -25,10 +25,12 @@ const GRAMMAR_MODULES: Record<string, string> = {
   c_sharp: 'tree-sitter-c-sharp',
 };
 
-// 缓存已加载的语法
+const CONDITIONAL_GRAMMAR_LANGUAGES = new Set(['kotlin', 'swift', 'dart']);
+
+// 缓存已加载的语法；null 表示已确认不可用，避免重复动态导入和重复日志。
 // tree-sitter Language 类型是原生对象，没有导出类型定义
 type TreeSitterLanguage = unknown;
-const loadedGrammars: Map<string, TreeSitterLanguage> = new Map();
+const loadedGrammars: Map<string, TreeSitterLanguage | null> = new Map();
 
 // 缓存已初始化的解析器
 const parserCache: Map<string, Parser> = new Map();
@@ -42,11 +44,13 @@ const parserCache: Map<string, Parser> = new Map();
  */
 async function loadGrammar(language: string): Promise<TreeSitterLanguage | null> {
   // 检查缓存
-  const cached = loadedGrammars.get(language);
-  if (cached) return cached;
+  if (loadedGrammars.has(language)) {
+    return loadedGrammars.get(language) ?? null;
+  }
 
   const moduleName = GRAMMAR_MODULES[language];
   if (!moduleName) return null;
+  const isConditionalGrammar = CONDITIONAL_GRAMMAR_LANGUAGES.has(language);
 
   try {
     // 动态导入语法模块
@@ -85,16 +89,22 @@ async function loadGrammar(language: string): Promise<TreeSitterLanguage | null>
     }
 
     if (!grammar) {
-      console.error(
-        `[ParserPool] Could not extract grammar for ${language} from module ${moduleName}`,
-      );
+      loadedGrammars.set(language, null);
+      if (!isConditionalGrammar) {
+        console.error(
+          `[ParserPool] Could not extract grammar for ${language} from module ${moduleName}`,
+        );
+      }
       return null;
     }
 
     loadedGrammars.set(language, grammar);
     return grammar;
   } catch (err) {
-    console.error(`[ParserPool] Failed to load grammar for ${language}:`, err);
+    loadedGrammars.set(language, null);
+    if (!isConditionalGrammar) {
+      console.error(`[ParserPool] Failed to load grammar for ${language}:`, err);
+    }
     return null;
   }
 }
