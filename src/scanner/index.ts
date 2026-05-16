@@ -263,7 +263,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     // 准备数据库操作
     const toAdd: FileMeta[] = [];
     const toUpdateMtime: Array<{ path: string; mtime: number }> = [];
-    const deletedPaths: string[] = [];
+    const deletedPathSet = new Set<string>();
 
     for (const result of results) {
       switch (result.status) {
@@ -296,13 +296,20 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
 
     // 处理已删除的文件
     const allIndexedPaths = getAllPaths(db);
+    const allIndexedPathSet = new Set(allIndexedPaths.map((p) => p.replace(/\\/g, '/')));
     for (const indexedPath of allIndexedPaths) {
       // 标准化路径分隔符进行比较
       const normalizedIndexedPath = indexedPath.replace(/\\/g, '/');
       if (!scannedPaths.has(normalizedIndexedPath)) {
-        deletedPaths.push(indexedPath);
+        deletedPathSet.add(indexedPath);
       }
     }
+    for (const result of results) {
+      if (result.skipReason === 'path_escape' && allIndexedPathSet.has(result.relPath)) {
+        deletedPathSet.add(result.relPath);
+      }
+    }
+    const deletedPaths = [...deletedPathSet];
 
     // 增量更新
     let stats = buildScanStats(filePaths.length, results, deletedPaths);

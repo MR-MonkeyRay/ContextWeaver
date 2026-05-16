@@ -90,6 +90,76 @@ describe('scanner visibility contracts', () => {
     expect(stats).not.toHaveProperty('skippedPaths');
   });
 
+  it('does not report a skipped path escape as deleted when it was never indexed', async () => {
+    vi.doMock('../../src/config.js', () => ({
+      getEmbeddingConfig: () => ({ dimensions: 1024 }),
+    }));
+    vi.doMock('../../src/db/index.js', () => ({
+      batchDelete: vi.fn(),
+      batchUpdateMtime: vi.fn(),
+      batchUpsert: vi.fn(),
+      clear: vi.fn(),
+      closeDb: vi.fn(),
+      generateProjectId: () => 'project-id',
+      getAllFileMeta: () => new Map(),
+      getAllPaths: () => [],
+      getFilesNeedingVectorIndex: () => [],
+      getStoredEmbeddingDimensions: () => null,
+      initDb: () => ({}) as object,
+      setStoredEmbeddingDimensions: vi.fn(),
+    }));
+    vi.doMock('../../src/indexer/index.js', () => ({
+      closeAllIndexers: vi.fn(),
+      getIndexer: async () => ({
+        clear: vi.fn(),
+        indexFiles: vi.fn(),
+      }),
+    }));
+    vi.doMock('../../src/utils/logger.js', () => ({
+      logger: {
+        debug: vi.fn(),
+        error: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      },
+    }));
+    vi.doMock('../../src/vectorStore/index.js', () => ({
+      closeAllVectorStores: vi.fn(),
+    }));
+    vi.doMock('../../src/scanner/crawler.js', () => ({
+      crawl: async () => ({
+        filePaths: ['/repo/src/leak.ts'],
+      }),
+    }));
+    vi.doMock('../../src/scanner/filter.js', () => ({
+      initFilter: vi.fn(),
+    }));
+    vi.doMock('../../src/scanner/processor.js', () => ({
+      processFiles: vi.fn().mockResolvedValue([
+        {
+          absPath: '/repo/src/leak.ts',
+          relPath: 'src/leak.ts',
+          hash: '',
+          content: null,
+          chunks: [],
+          language: 'typescript',
+          mtime: 0,
+          size: 0,
+          status: 'skipped',
+          error: 'Resolved path escapes repository root: src/leak.ts',
+          skipReason: 'path_escape',
+        },
+      ]),
+    }));
+
+    const { scan } = await import('../../src/scanner/index.js');
+    const stats = await scan('/repo', { vectorIndex: false });
+
+    expect(stats.skippedByReason).toEqual({ path_escape: 1 });
+    expect(stats.deleted).toBe(0);
+    expect(stats.visibility.deletedPaths).toBe(0);
+  });
+
   it('throws a typed scanner failure with stage and safe partial stats', async () => {
     vi.doMock('../../src/config.js', () => ({
       getEmbeddingConfig: () => ({ dimensions: 1024 }),

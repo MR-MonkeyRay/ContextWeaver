@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { getProjectIdentity } from './db/index.js';
+import { ensurePrivateDir, writePrivateFile } from './utils/privateStorage.js';
 
 export interface IndexedProjectRecord {
   projectId: string;
@@ -106,15 +107,14 @@ async function readRegistry(): Promise<RegistryFile> {
 
 async function writeRegistry(records: IndexedProjectRecord[]): Promise<void> {
   const registryPath = getRegistryPath();
-  await fs.mkdir(path.dirname(registryPath), { recursive: true });
+  await ensurePrivateDir(path.dirname(registryPath));
   const sorted = records
     .map(normalizeRecord)
     .sort((a, b) => a.projectPath.localeCompare(b.projectPath));
-  await fs.writeFile(
+  await writePrivateFile(
     registryPath,
     `${JSON.stringify({ version: 1, indexes: sorted }, null, 2)}
 `,
-    'utf-8',
   );
 }
 

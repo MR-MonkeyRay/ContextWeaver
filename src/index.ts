@@ -18,6 +18,7 @@ import {
 import { ScanStageError, type ScanStats } from './scanner/index.js';
 import type { SkipReasonBucket } from './scanner/processor.js';
 import { logger } from './utils/logger.js';
+import { ensurePrivateDir, hardenPrivatePath, writePrivateFile } from './utils/privateStorage.js';
 
 // 读取 package.json 获取版本号
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +98,7 @@ const SKIP_REASON_LABELS: Record<SkipReasonBucket, string> = {
   binary_file: '二进制文件',
   ignored_json: '忽略的 JSON',
   no_indexable_chunks: '无可索引 chunk',
+  path_escape: '路径越界',
   processing_error: '处理失败',
 };
 
@@ -246,7 +248,7 @@ cli.command('init', '初始化 ContextWeaver 配置').action(async () => {
 
   // 创建配置目录
   try {
-    await fs.mkdir(configDir, { recursive: true });
+    await ensurePrivateDir(configDir);
     logger.info(`创建配置目录: ${configDir}`);
   } catch (err) {
     const error = err as { code?: string; message?: string; stack?: string };
@@ -260,6 +262,7 @@ cli.command('init', '初始化 ContextWeaver 配置').action(async () => {
   // 检查是否已存在 .env 文件
   try {
     await fs.access(envFile);
+    await hardenPrivatePath(envFile);
     logger.warn(`.env 文件已存在: ${envFile}`);
     logger.info('初始化完成！');
     return;
@@ -295,7 +298,7 @@ RERANK_TOP_N=20
 
 `;
   try {
-    await fs.writeFile(envFile, defaultEnvContent);
+    await writePrivateFile(envFile, defaultEnvContent);
     logger.info(`创建 .env 文件: ${envFile}`);
   } catch (err) {
     const error = err as { message?: string; stack?: string };

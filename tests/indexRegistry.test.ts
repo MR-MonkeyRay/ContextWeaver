@@ -70,6 +70,49 @@ describe('indexRegistry', () => {
     ]);
   });
 
+  it('stores the registry under a private directory and file mode', async () => {
+    const previousUmask = process.umask(0o002);
+    try {
+      const repoRoot = await createTempDir('cw-repo-');
+
+      await upsertIndexedProject({
+        projectId: 'abc123def0',
+        projectPath: repoRoot,
+        pathBirthtimeMs: 1,
+        lastIndexedAt: '2026-03-27T00:00:00.000Z',
+      });
+
+      const baseMode = (await fs.stat(path.dirname(registryPath))).mode & 0o777;
+      const fileMode = (await fs.stat(registryPath)).mode & 0o777;
+
+      expect(baseMode).toBe(0o700);
+      expect(fileMode).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
+
+  it('hardens an existing permissive registry directory and file', async () => {
+    await fs.mkdir(path.dirname(registryPath), { recursive: true, mode: 0o777 });
+    await fs.writeFile(registryPath, '{"version":1,"indexes":[]}\n', {
+      encoding: 'utf-8',
+      mode: 0o666,
+    });
+    await fs.chmod(path.dirname(registryPath), 0o777);
+    await fs.chmod(registryPath, 0o666);
+
+    const repoRoot = await createTempDir('cw-repo-');
+    await upsertIndexedProject({
+      projectId: 'abc123def0',
+      projectPath: repoRoot,
+      pathBirthtimeMs: 1,
+      lastIndexedAt: '2026-03-27T00:00:00.000Z',
+    });
+
+    expect((await fs.stat(path.dirname(registryPath))).mode & 0o777).toBe(0o700);
+    expect((await fs.stat(registryPath)).mode & 0o777).toBe(0o600);
+  });
+
   it('stores and updates confirmedAt for an indexed project', async () => {
     const repoRoot = await createTempDir('cw-repo-');
 

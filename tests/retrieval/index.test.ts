@@ -51,10 +51,16 @@ async function createTempDir(prefix: string): Promise<string> {
 async function createIndexedRepo(): Promise<{ repoPath: string; projectId: string }> {
   const repoPath = await createTempDir('cw-retrieval-repo-');
   const projectId = getProjectIdentity(repoPath).projectId;
-  const projectDir = path.join(os.homedir(), '.contextweaver', projectId);
+  const baseDir = path.join(os.homedir(), '.contextweaver');
+  const projectDir = path.join(baseDir, projectId);
+  await fs.mkdir(baseDir, { recursive: true, mode: 0o777 });
   await fs.mkdir(projectDir, { recursive: true });
   await fs.writeFile(path.join(projectDir, 'index.db'), '', 'utf-8');
   return { repoPath, projectId };
+}
+
+function expectPrivateMode(stats: { mode: number }, mode: number): void {
+  expect(stats.mode & 0o777).toBe(mode);
 }
 
 async function existingBundledCliEntryPaths(): Promise<string[]> {
@@ -251,6 +257,9 @@ describe('retrieveCodeContext', () => {
       'background-index.request',
     );
     await expect(fs.readFile(markerPath, 'utf-8')).resolves.toContain(String(process.pid));
+    expectPrivateMode(await fs.stat(path.dirname(path.dirname(markerPath))), 0o700);
+    expectPrivateMode(await fs.stat(path.dirname(markerPath)), 0o700);
+    expectPrivateMode(await fs.stat(markerPath), 0o600);
 
     await retrieveCodeContext({
       repoPath,

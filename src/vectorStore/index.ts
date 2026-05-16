@@ -7,10 +7,10 @@
  * - 文件级删除
  */
 
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as lancedb from '@lancedb/lancedb';
+import { ensurePrivateDirSync, hardenPrivateTreeSync } from '../utils/privateStorage.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 
@@ -82,11 +82,11 @@ export class VectorStore {
 
     // 确保目录存在
     const projectDir = path.join(BASE_DIR, this.projectId);
-    if (!fs.existsSync(projectDir)) {
-      fs.mkdirSync(projectDir, { recursive: true });
-    }
+    ensurePrivateDirSync(BASE_DIR);
+    ensurePrivateDirSync(projectDir);
 
     this.db = await lancedb.connect(this.dbPath);
+    hardenPrivateTreeSync(this.dbPath);
 
     // 获取或创建 chunks 表
     const tableNames = await this.db.tableNames();
@@ -142,6 +142,7 @@ export class VectorStore {
         `file_path = '${this.escapeString(filePath)}' AND file_hash != '${this.escapeString(newHash)}'`,
       );
     }
+    hardenPrivateTreeSync(this.dbPath);
   }
 
   /**
@@ -160,6 +161,7 @@ export class VectorStore {
   ): Promise<void> {
     if (!this.db) throw new Error('VectorStore not initialized');
     if (files.length === 0) return;
+    let wroteRecords = false;
 
     // 分批参数（经验值，避免 native 模块崩溃）
     const BATCH_FILES = 50; // 每批最多 50 个文件
@@ -210,6 +212,7 @@ export class VectorStore {
       } else {
         await this.table.add(batchRecords as unknown as Record<string, unknown>[]);
       }
+      wroteRecords = true;
 
       // 2. 批量删除本批次的旧版本
       if (this.table && batch.length > 0) {
@@ -221,6 +224,10 @@ export class VectorStore {
           .join(' OR ');
         await this.table.delete(deleteConditions);
       }
+    }
+
+    if (wroteRecords) {
+      hardenPrivateTreeSync(this.dbPath);
     }
   }
 

@@ -14,10 +14,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import dotenv from 'dotenv';
+import { ensurePrivateDirSync, hardenPrivatePathSync } from './utils/privateStorage.js';
 
 // 环境变量加载
 
 const isDev = process.env.NODE_ENV === 'dev';
+const userConfigDir = path.join(os.homedir(), '.contextweaver');
+const userEnvPath = path.join(userConfigDir, '.env');
 
 // 兼容 logger 的非交互模式检测；当前已不再暴露 MCP 命令。
 export const isMcpMode = process.argv.includes('mcp');
@@ -27,16 +30,21 @@ function loadEnv(): void {
   const candidates = isDev
     ? [
         path.join(process.cwd(), '.env'), // 1. 当前目录（开发用）
-        path.join(os.homedir(), '.contextweaver', '.env'), // 2. 用户配置目录（回退）
+        userEnvPath, // 2. 用户配置目录（回退）
       ]
     : [
-        path.join(os.homedir(), '.contextweaver', '.env'), // 生产环境只用用户配置
+        userEnvPath, // 生产环境只用用户配置
       ];
 
   // 找到第一个存在的文件
   const envPath = candidates.find((p) => fs.existsSync(p));
 
   if (envPath) {
+    if (envPath === userEnvPath) {
+      ensurePrivateDirSync(userConfigDir);
+      hardenPrivatePathSync(envPath);
+    }
+
     const result = dotenv.config({ path: envPath, quiet: true });
     if (result.error) {
       // 环境变量加载失败是致命错误，此时 logger 尚未初始化，只能用 console
@@ -199,12 +207,14 @@ export function getEmbeddingConfig(): EmbeddingConfig {
     batchSize: Number.isNaN(batchSize) || batchSize < 1 ? 10 : batchSize,
     maxConcurrency: Number.isNaN(maxConcurrency) || maxConcurrency < 1 ? 4 : maxConcurrency,
     networkRetries: Number.isNaN(networkRetries) || networkRetries < 0 ? 5 : networkRetries,
-    retryBaseDelayMs: Number.isNaN(retryBaseDelayMs) || retryBaseDelayMs < 0 ? 1000 : retryBaseDelayMs,
+    retryBaseDelayMs:
+      Number.isNaN(retryBaseDelayMs) || retryBaseDelayMs < 0 ? 1000 : retryBaseDelayMs,
     retryIntervalIncrementMs:
       Number.isNaN(retryIntervalIncrementMs) || retryIntervalIncrementMs < 0
         ? 1000
         : retryIntervalIncrementMs,
-    requestTimeoutMs: Number.isNaN(requestTimeoutMs) || requestTimeoutMs < 0 ? 60000 : requestTimeoutMs,
+    requestTimeoutMs:
+      Number.isNaN(requestTimeoutMs) || requestTimeoutMs < 0 ? 60000 : requestTimeoutMs,
     windowSize: Number.isNaN(windowSize) || windowSize < 1 ? 50 : windowSize,
     dimensions: Number.isNaN(dimensions) ? 1024 : dimensions,
     maxInputTokens: Number.isNaN(maxInputTokens) ? 8192 : maxInputTokens,

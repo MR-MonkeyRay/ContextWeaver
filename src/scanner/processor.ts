@@ -2,13 +2,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import pLimit from 'p-limit';
-import { getChunkingConfig } from '../config.js';
 import {
   getParser,
   isLanguageSupported,
   type ProcessedChunk,
   SemanticSplitter,
 } from '../chunking/index.js';
+import { getChunkingConfig } from '../config.js';
 import { readFileWithEncoding } from '../utils/encoding.js';
 import { sha256 } from './hash.js';
 import { getLanguage } from './language.js';
@@ -95,6 +95,7 @@ export type SkipReasonBucket =
   | 'binary_file'
   | 'ignored_json'
   | 'no_indexable_chunks'
+  | 'path_escape'
   | 'processing_error';
 
 function classifySkipReason(options: {
@@ -127,8 +128,16 @@ function classifySkipReason(options: {
   if (message === 'Lock file or node_modules JSON') {
     return 'ignored_json';
   }
+  if (message.startsWith('Resolved path escapes repository root')) {
+    return 'path_escape';
+  }
 
   return 'processing_error';
+}
+
+function isPathInsideRoot(realRoot: string, realPath: string): boolean {
+  const relativePath = path.relative(realRoot, realPath);
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
 /**
@@ -161,6 +170,7 @@ export interface KnownFileMeta {
  * 处理单个文件
  */
 async function processFile(
+  realRoot: string,
   absPath: string,
   relPath: string,
   known?: KnownFileMeta,
@@ -168,7 +178,24 @@ async function processFile(
   const language = getLanguage(relPath);
 
   try {
-    const stat = await fs.stat(absPath);
+    const realPath = await fs.realpath(absPath);
+    if (!isPathInsideRoot(realRoot, realPath)) {
+      return {
+        absPath,
+        relPath,
+        hash: '',
+        content: null,
+        chunks: [],
+        language,
+        mtime: 0,
+        size: 0,
+        status: 'skipped',
+        error: `Resolved path escapes repository root: ${relPath}`,
+        skipReason: 'path_escape',
+      };
+    }
+
+    const stat = await fs.stat(realPath);
     const mtime = stat.mtimeMs;
     const size = stat.size;
 
@@ -205,7 +232,7 @@ async function processFile(
     }
 
     // 读取文件内容（自动检测编码并转换为 UTF-8）
-    const { content, originalEncoding } = await readFileWithEncoding(absPath);
+    const { content, originalEncoding } = await readFileWithEncoding(realPath);
 
     // 二进制检测：检查 NULL 字节
     if (content.includes('\0')) {
@@ -323,12 +350,13 @@ export async function processFiles(
 ): Promise<ProcessResult[]> {
   const concurrency = getAdaptiveConcurrency();
   const limit = pLimit(concurrency);
+  const realRoot = await fs.realpath(rootPath);
 
   const tasks = filePaths.map((filePath) => {
     // 标准化路径分隔符为 /，确保跨平台一致性
     const relPath = path.relative(rootPath, filePath).replace(/\\/g, '/');
     const known = knownFiles.get(relPath);
-    return limit(() => processFile(filePath, relPath, known));
+    return limit(() => processFile(realRoot, filePath, relPath, known));
   });
 
   return Promise.all(tasks);

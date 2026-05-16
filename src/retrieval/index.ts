@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { getProjectIdentity } from '../db/index.js';
 import type { ContextPack, SearchConfig, Segment } from '../search/types.js';
 import { logger } from '../utils/logger.js';
+import {
+  ensurePrivateDirSync,
+  hardenPrivatePathSync,
+  writePrivateFileSync,
+} from '../utils/privateStorage.js';
 
 export interface SearchSummary {
   query: string;
@@ -51,14 +56,13 @@ async function ensureDefaultEnvFile(): Promise<void> {
   const configDir = BASE_DIR;
   const envFile = path.join(configDir, '.env');
 
+  ensurePrivateDirSync(configDir);
   if (fs.existsSync(envFile)) {
+    hardenPrivatePathSync(envFile);
     return;
   }
 
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-    logger.info({ configDir }, '创建配置目录');
-  }
+  logger.info({ configDir }, '创建配置目录');
 
   const defaultEnvContent = `# ContextWeaver 示例环境变量配置文件
 
@@ -77,7 +81,7 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_TOP_N=20
 `;
 
-  fs.writeFileSync(envFile, defaultEnvContent);
+  writePrivateFileSync(envFile, defaultEnvContent);
   logger.info({ envFile }, '已创建默认 .env 配置文件');
 }
 
@@ -94,9 +98,8 @@ function claimBackgroundIndexRequest(projectId: string): string | null {
   const requestPath = getBackgroundIndexRequestPath(projectId);
   const dir = path.dirname(requestPath);
 
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  ensurePrivateDirSync(BASE_DIR);
+  ensurePrivateDirSync(dir);
 
   try {
     const content = fs.readFileSync(requestPath, 'utf-8');
@@ -115,7 +118,7 @@ function claimBackgroundIndexRequest(projectId: string): string | null {
   }
 
   try {
-    fs.writeFileSync(requestPath, JSON.stringify({ pid: process.pid, timestamp: Date.now() }), {
+    writePrivateFileSync(requestPath, JSON.stringify({ pid: process.pid, timestamp: Date.now() }), {
       flag: 'wx',
     });
     return requestPath;

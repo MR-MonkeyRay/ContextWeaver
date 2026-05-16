@@ -33,6 +33,28 @@ afterEach(async () => {
 });
 
 describe('withLock', () => {
+  it('creates lock directories and lock files with private permissions', async () => {
+    const previousUmask = process.umask(0o002);
+    try {
+      const { withLock } = await loadLockModule();
+      const projectId = 'private-lock';
+
+      await withLock(projectId, 'index', async () => {
+        const projectDir = path.dirname(lockPath(projectId));
+        const baseDir = path.dirname(projectDir);
+        const baseMode = (await fs.stat(baseDir)).mode & 0o777;
+        const dirMode = (await fs.stat(projectDir)).mode & 0o777;
+        const fileMode = (await fs.stat(lockPath(projectId))).mode & 0o777;
+
+        expect(baseMode).toBe(0o700);
+        expect(dirMode).toBe(0o700);
+        expect(fileMode).toBe(0o600);
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
+
   it('reports active locks and releases only the token it owns', async () => {
     const { isProjectLocked, withLock } = await loadLockModule();
     const projectId = 'token-owned';

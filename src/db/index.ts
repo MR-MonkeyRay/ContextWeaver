@@ -9,6 +9,7 @@ import {
   initChunksFts,
   initFilesFts,
 } from '../search/fts.js';
+import { ensurePrivateDirSync, hardenPrivatePathSync } from '../utils/privateStorage.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 
@@ -92,14 +93,16 @@ export function getProjectIdentity(projectPath: string): ProjectIdentity {
 export function initDb(projectId: string): Database.Database {
   // 确保目录存在
   const projectDir = path.join(BASE_DIR, projectId);
-  if (!fs.existsSync(projectDir)) {
-    fs.mkdirSync(projectDir, { recursive: true });
-  }
+  ensurePrivateDirSync(BASE_DIR);
+  ensurePrivateDirSync(projectDir);
 
   const dbPath = path.join(projectDir, 'index.db');
   const db = new Database(dbPath);
+  hardenPrivatePathSync(dbPath);
   db.pragma('busy_timeout = 5000');
   db.pragma('journal_mode = WAL');
+  hardenPrivatePathSync(`${dbPath}-wal`);
+  hardenPrivatePathSync(`${dbPath}-shm`);
 
   // 创建 files 表
   db.exec(`

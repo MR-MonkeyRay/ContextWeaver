@@ -4,15 +4,15 @@ import path from 'node:path';
 import { Writable } from 'node:stream';
 import pino from 'pino';
 import { isDev, isMcpMode } from '../config.js';
+import { createPrivateAppendStream, ensurePrivateDirSync } from './privateStorage.js';
 
 const logLevel = isDev ? 'debug' : 'info';
 const logDir = path.join(os.homedir(), '.contextweaver', 'logs');
 const LOG_RETENTION_DAYS = 7;
 
 function ensureLogDir(dir: string): void {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  ensurePrivateDirSync(path.dirname(dir));
+  ensurePrivateDirSync(dir);
 }
 
 function getLogFileName(): string {
@@ -82,7 +82,7 @@ function cleanupOldLogs(dir: string): void {
 
 // 自定义 Writable Stream 来格式化日志
 function createFormattedStream(filePath: string): Writable {
-  const writeStream = fs.createWriteStream(filePath, { flags: 'a' });
+  const writeStream = createPrivateAppendStream(filePath);
 
   return new Writable({
     write(

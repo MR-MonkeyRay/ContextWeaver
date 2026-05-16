@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { logger } from './logger.js';
+import { ensurePrivateDirSync, writePrivateFileSync } from './privateStorage.js';
 
 const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 const LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 锁最大持有时长
@@ -134,7 +135,7 @@ function createLockFile(lockPath: string, operation: string, token: string): boo
   const tempPath = getLockTempFilePath(lockPath, token);
 
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(buildLockInfo(operation, token)), { flag: 'w' });
+    writePrivateFileSync(tempPath, JSON.stringify(buildLockInfo(operation, token)));
     fs.linkSync(tempPath, lockPath);
     return true;
   } catch (err) {
@@ -161,7 +162,7 @@ function refreshLockFile(lockPath: string, operation: string, token: string): vo
   const tempPath = getLockTempFilePath(lockPath, `${token}.heartbeat`);
 
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(buildLockInfo(operation, token)), { flag: 'w' });
+    writePrivateFileSync(tempPath, JSON.stringify(buildLockInfo(operation, token)));
     fs.renameSync(tempPath, lockPath);
   } catch (err) {
     try {
@@ -212,9 +213,8 @@ async function acquireLock(
   const dir = path.dirname(lockPath);
 
   // 确保目录存在
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  ensurePrivateDirSync(BASE_DIR);
+  ensurePrivateDirSync(dir);
 
   const startTime = Date.now();
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

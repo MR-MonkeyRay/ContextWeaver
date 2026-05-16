@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const REQUIRED_EMBEDDING_ENV = {
@@ -7,11 +10,19 @@ const REQUIRED_EMBEDDING_ENV = {
 };
 
 describe('getEmbeddingConfig', () => {
-  const originalEnv = process.env;
+  const originalEnv = { ...process.env };
+  const tempHomes: string[] = [];
+
+  function restoreEnv(env: NodeJS.ProcessEnv): void {
+    for (const key of Object.keys(process.env)) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, env);
+  }
 
   beforeEach(() => {
     vi.resetModules();
-    process.env = { ...originalEnv, ...REQUIRED_EMBEDDING_ENV };
+    restoreEnv({ ...originalEnv, ...REQUIRED_EMBEDDING_ENV });
     delete process.env.EMBEDDINGS_BATCH_SIZE;
     delete process.env.EMBEDDINGS_NETWORK_RETRIES;
     delete process.env.EMBEDDINGS_RETRY_BASE_DELAY_MS;
@@ -24,8 +35,16 @@ describe('getEmbeddingConfig', () => {
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    restoreEnv(originalEnv);
+    return Promise.all(
+      tempHomes.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+    );
   });
+
+  async function modeOf(targetPath: string): Promise<number> {
+    const stat = await fs.stat(targetPath);
+    return stat.mode & 0o777;
+  }
 
   it('uses 10 as the default batchSize', async () => {
     const { getEmbeddingConfig } = await import('../src/config.js');
@@ -97,5 +116,31 @@ describe('getEmbeddingConfig', () => {
       chunkMinSize: 80,
       chunkOverlap: 10,
     });
+  });
+
+  it('hardens the user env file when it is loaded at startup', async () => {
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-config-home-'));
+    tempHomes.push(fakeHome);
+    const configDir = path.join(fakeHome, '.contextweaver');
+    const envPath = path.join(configDir, '.env');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      envPath,
+      [
+        'EMBEDDINGS_API_KEY=env-key',
+        'EMBEDDINGS_BASE_URL=https://example.com/embeddings',
+        'EMBEDDINGS_MODEL=env-model',
+      ].join('\n'),
+      { mode: 0o666 },
+    );
+    await fs.chmod(configDir, 0o777);
+    await fs.chmod(envPath, 0o666);
+
+    restoreEnv({ ...originalEnv, HOME: fakeHome, NODE_ENV: 'production' });
+
+    await import('../src/config.js');
+
+    expect(await modeOf(configDir)).toBe(0o700);
+    expect(await modeOf(envPath)).toBe(0o600);
   });
 });
