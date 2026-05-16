@@ -1,119 +1,162 @@
 ---
 name: using-contextweaver
 description: >-
-  需要理解代码库中功能如何实现、定位相关代码、或在修改前摸清上下文时主动调用。
-  语义检索理解代码行为，而非匹配字符串。用户问"X 怎么实现的""帮我定位 Y 的逻辑"、
-  收到 bug 需定位、接手不熟悉模块、或任何需要建立代码地图的场景都应优先使用。
-  仅在已知精确文件行号时才退回到 read/grep。
+  需要理解代码库中功能如何实现、定位相关代码、建立代码地图、分析调用关系、
+  或在非 trivial 修改前摸清上下文时主动使用。用户问"X 怎么实现的"、
+  "帮我定位 Y 的逻辑"、收到 bug 需要定位、接手不熟悉项目/模块、
+  或需要判断 ContextWeaver 检索/索引前置条件时使用。仅在已知精确文件行号、
+  需要穷举文本匹配、或任务明确要求 grep/read 时跳过。
 ---
 
 # 使用 ContextWeaver
 
-## ContextWeaver 为什么是你的首选
+## 定位
 
-`read` 看局部、`grep` 找字面——但它们都不理解代码**语义**。ContextWeaver 通过向量 + FTS5 + RRF 融合 + Rerank 实现语义级代码理解：
+ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 负责建立确认式索引并输出检索证据；这个 Skill 负责指导 agent 在合适时机调用 `contextweaver search` 的配套脚本，读取证据后再转向精确文件阅读或修改。
 
-- **理解意图而非匹配字符串**：即使你用的术语和代码里不一样，语义检索也能命中
-- **智能排序**：不是把所有匹配都摊给你，而是把最相关的排在前面
-- **跨文件上下文**：通过三阶段图扩展，自动关联 import、调用链等相关文件
-- **一步建立代码地图**：一个查询就能定位关键类、函数、入口和数据流
+优先使用它来回答"怎么实现"、"逻辑在哪里"、"哪些文件相关"、"改动前影响面是什么"。不要把它当成全文枚举工具；需要统计全部出现位置、逐个替换、或已经知道文件和行号时，直接用 `rg`/read。
 
-换句话说：`grep` 告诉你"哪里有这个字符串"，ContextWeaver 告诉你"这段逻辑是什么、怎么实现的、和哪些文件有关"。
+## 前置条件
 
-## 何时使用 — 积极使用
+先确认目标仓库已经可搜索。`search-context.mjs` 不会自动初始化新项目；它只是包装 `contextweaver search`。
 
-以下任何时候，优先用 ContextWeaver 而不是 grep 或盲目 read：
+- 全局配置：运行过 `contextweaver init` 或已有 `~/.contextweaver/.env`。
+- 必要环境变量：`EMBEDDINGS_API_KEY`、`EMBEDDINGS_BASE_URL`、`EMBEDDINGS_MODEL`、`RERANK_API_KEY`、`RERANK_BASE_URL`、`RERANK_MODEL`。缺失时检索会创建示例 `.env` 后报错，不能继续声称已完成语义检索。
+- 项目配置：目标仓库根目录有 `cwconfig.json`。没有时先在仓库根目录运行 `contextweaver init-project`，检查生成的 `includePatterns`/`ignorePatterns` 是否覆盖正确代码。
+- 确认式索引：目标仓库已经成功运行过 `contextweaver index`。首次索引会预览范围并要求确认；非交互环境只有在范围已被当前任务授权且已经检查过时才使用 `contextweaver index /abs/path --yes`。
 
-- 用户问"X 是怎么实现的""Y 的处理流程是什么"
-- 用户给了一个模糊的改代码请求，你不确定要改哪些文件
-- 你需要理解某个模块的职责和对外接口
-- 你要修改一段代码，但不知道会影响哪些其他地方
-- 你接手了一个不熟悉的项目或模块
-- 你看到了一个符号名（类名、函数名），想知道它在整个仓库中的上下文
-- 用户说"帮我定位 X 的代码""帮我找一下 Y 的逻辑"
-- 收到一个 bug 报告，需要快速定位相关逻辑
-- 你想知道两个模块之间是怎么关联/调用的
-- 在做任何非 trivial 的修改之前，先摸清代码结构
+常见失败处理：
 
-核心原则：**理解行为 → 用 ContextWeaver；已知精确文件 → 用 read；穷举文本匹配 → 用 grep。**
+| 现象 | 处理 |
+| --- | --- |
+| `当前仓库尚未完成确认式索引，请先运行 cw index` | 检查/创建 `cwconfig.json`，再运行 `contextweaver index`。 |
+| `已创建 .../cwconfig.json，请先检查配置后重新运行 cw index` | 打开 `cwconfig.json`，确认索引范围，再重新执行索引。 |
+| `ContextWeaver 环境变量未配置` | 编辑 `~/.contextweaver/.env` 或设置对应环境变量后重试。 |
+| 脚本退出 1，且无法找到/启动 `contextweaver` | 安装 CLI，或设置 `CONTEXTWEAVER_BIN=/abs/path/to/contextweaver`。 |
+| 输出 JSON 前有日志行 | 忽略日志行，从第一个 `{` 开始解析 JSON；人工排查可改用 `--format text`。 |
 
-## 什么时候可以跳过
-
-以下少数情况确实不需要 ContextWeaver，直接用更轻量的工具即可：
-
-- 你 100% 确定要看哪个文件的哪几行 → 直接 `read`
-- 任务明确要求"找出所有出现位置""统计次数""逐个替换" → 直接 `grep`
-
-但当你不确定文件路径、不确定影响范围、不确定有没有遗漏关键文件时，**先用 ContextWeaver 扫一遍是最稳妥的选择**。宁可多花 5 秒检索，不要漏掉关键上下文。
-
-## 查询写法
+## 查询规则
 
 ### `information-request`
 
-写完整自然语言，重点描述"怎么工作""如何处理""流程如何衔接"。
+写完整自然语言，描述要理解的行为、流程或关联关系。把问题写成"这件事在仓库里怎么工作"，不要只塞文件名或零散关键词。
 
 好例子：
 
 - `提示词增强相关逻辑目前是如何触发、拼装模板并返回结果的？`
-- `当前 CLI 搜索命令如何接入语义检索核心，并将结果格式化输出？`
+- `当前 CLI 搜索命令如何检查索引前置条件，并将结果格式化输出？`
+- `索引确认流程如何从 cwconfig.json 生成预览并记录 confirmedAt？`
 
 避免：
 
-- 只写文件名、目录名、零散关键词
-- 一次塞多个互不相关的问题
+- 只写 `src/index.ts`、`SearchService` 这类孤立词。
+- 一次询问多个互不相关的功能。
+- 把完整聊天记录塞进查询。
 
 ### `technical-terms`
 
-这是硬过滤，只放你 100% 确定存在的精确标识符。
+把它当作查询增强词，不要当作硬过滤器。只放少量确定存在的符号、类名、函数名、配置键或命令名；这些词会与 `information-request` 拼接后参与检索。
 
 可以放：
 
 - `SearchService`
-- `enhancePrompt`
-- `handleCodebaseRetrieval`
+- `ensureSearchableProject`
+- `cwconfig.json`
 
 不要放：
 
-- 猜测的符号名
-- 文件路径，如 `src/index.ts`
-- 命令字面量，如 `contextweaver search`
+- 猜测的符号名。
+- 文件路径，如 `src/index.ts`。
+- 过多普通词或整句描述。
 
-## 使用步骤
+## 调用方式
 
-1. 先写 `information-request`
-2. 如果有少量确定符号，再补 `technical-terms`
-3. 调用本地脚本：
+优先调用本 Skill 自带脚本，并把脚本路径按当前 `SKILL.md` 所在目录解析；不要假设目标仓库根目录一定有 `skills/using-contextweaver`。
+
+```bash
+node /abs/path/to/using-contextweaver/scripts/search-context.mjs \
+  --repo-path /abs/path/to/repo \
+  --information-request "当前 CLI 搜索命令如何检查索引前置条件，并将结果格式化输出？" \
+  --technical-terms ensureSearchableProject,SearchService
+```
+
+在 ContextWeaver 包源码根目录内，也可以使用相对路径：
 
 ```bash
 node skills/using-contextweaver/scripts/search-context.mjs \
   --repo-path /abs/path/to/repo \
-  --information-request "提示词增强相关逻辑目前是如何触发、拼装模板并返回结果的？" \
-  --technical-terms SearchService,enhancePrompt
+  --information-request "提示词增强相关逻辑目前是如何触发、拼装模板并返回结果的？"
 ```
 
-默认输出 JSON，方便 agent 稳定消费结构化字段；需要人工排查时可显式追加 `--format text`。
+脚本行为：
 
-4. 如果脚本输出 JSON，先看最相关的 `files[].path` 和 `segments[].breadcrumb`
-5. 命中关键结果后转去 `read` 深入阅读
+- 默认转发为 `contextweaver search --format json ...`。
+- 显式文本输出用分离参数：`--format text`。不要写 `--format=text`，脚本只识别独立的 `--format` token。
+- 二进制解析顺序是 `CONTEXTWEAVER_BIN` -> 当前包的 `dist/index.js` -> PATH 里的 `contextweaver`。
+- 在本地源码包调试时，如果 `dist/index.js` 不存在，先运行 `pnpm build` 或设置 `CONTEXTWEAVER_BIN`。
 
-## 快速参考
+底层 `contextweaver search` 参数：
 
-| 目标                        | 做法                    |
-| --------------------------- | ----------------------- |
-| 理解一个功能如何实现        | 首选 ContextWeaver      |
-| 改代码前摸清上下文          | 首选 ContextWeaver      |
-| 定位不熟悉的符号            | 首选 ContextWeaver      |
-| 探索代码架构                | 首选 ContextWeaver      |
-| 已知精确文件行号            | 直接 `read`             |
-| 穷举全部文本匹配            | 直接 `grep`             |
-| 让其他 Skill 自动拿语义证据 | 调 `search-context.mjs` |
+| 参数 | 要求 |
+| --- | --- |
+| `--repo-path <path>` | 目标仓库路径；建议传绝对路径，相对路径会按当前工作目录解析，省略时用当前工作目录。 |
+| `--information-request <text>` | 必填。自然语言检索意图。 |
+| `--technical-terms <a,b>` | 可选。逗号分隔的查询增强词。 |
+| `--format <json|text>` | CLI 默认 `text`；本脚本默认补 `json`。 |
 
-## 判断口诀
+## 读取结果
 
+JSON 结果的主要字段：
+
+- `summary.query`：实际组合后的查询。
+- `summary.seedCount`、`expandedCount`、`fileCount`、`totalSegments`：判断召回规模。
+- `files[].path`：优先阅读的文件。
+- `files[].segments[]`：包含 `startLine`、`endLine`、`breadcrumb`、`score`、`text`。
+
+处理方式：
+
+1. 先看 `files[].path` 和高分 `segments[].breadcrumb`，确定相关模块。
+2. 再用 read/sed 打开命中文件的上下文，不要只依赖片段就改代码。
+3. 如果结果不相关，改写 `information-request`，减少或替换 `technical-terms` 后重试一次。
+4. 如果仍失败，说明索引可能过窄、过旧或问题更适合文本搜索；检查 `cwconfig.json`/重新索引，或退回 `rg`。
+
+## 初始化与索引操作
+
+当检索失败且当前任务明确需要语义上下文时，按下面顺序处理：
+
+```bash
+# 只在全局配置缺失时运行
+contextweaver init
+
+# 在目标仓库根目录生成项目配置；已有配置时不要覆盖
+contextweaver init-project
+
+# 检查 cwconfig.json 后建立索引
+contextweaver index
 ```
-不确定要看哪些文件？ → ContextWeaver
-不确定改动影响范围？ → ContextWeaver
-想知道"怎么实现的"？ → ContextWeaver
-100% 知道文件+行号？ → read
-要统计/穷举/全替换？ → grep
+
+非交互执行时：
+
+```bash
+contextweaver index /abs/path/to/repo --yes
+```
+
+只在已确认索引范围不会扫入无关大目录、密钥、生成物或用户不希望发送到 Embedding/Reranker API 的内容后使用 `--yes`。索引会调用配置的外部模型服务；如果凭据、网络或费用边界不清楚，报告阻塞原因并使用 `rg`/read 做降级分析。
+
+## 何时跳过或降级
+
+- 已知精确文件和行号：直接 read。
+- 要找所有出现位置、统计次数、批量替换：用 `rg`。
+- 没有可用 API 凭据、不能索引、或索引范围未经确认：说明无法使用 ContextWeaver，改用 `rg`/read，不要伪造语义检索结论。
+- 需要把模糊需求整理成可执行任务 prompt：使用 `enhancing-prompts`；本 Skill 只负责代码语义检索。
+
+## 快速判断
+
+```text
+不确定要看哪些文件？ -> ContextWeaver
+不确定改动影响范围？ -> ContextWeaver
+想知道"怎么实现的"？ -> ContextWeaver
+100% 知道文件+行号？ -> read
+要统计/穷举/全替换？ -> rg
+新项目未索引？ -> init-project -> 检查 cwconfig.json -> index -> search
 ```
