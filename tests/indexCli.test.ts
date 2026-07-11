@@ -372,13 +372,63 @@ describe('cli helpers', () => {
     expect(lines).toContain('索引范围:');
   });
 
-  it('creates cwconfig.json and aborts index when project config is missing', async () => {
+  it('creates the recommended cwconfig.json when project config is missing', async () => {
     const repoRoot = await createRepo({ withConfig: false });
 
     const result = await ensureProjectConfigForIndex(repoRoot);
 
     expect(result.kind).toBe('created_config');
     expect(await fs.readFile(path.join(repoRoot, 'cwconfig.json'), 'utf-8')).toContain('src/**');
+  });
+
+  it('continues through preview and indexing after creating a missing project config', async () => {
+    const repoRoot = await createRepo({ withConfig: false });
+    const lines: string[] = [];
+    const scanFn = vi.fn().mockResolvedValue(mockStats);
+
+    await runIndexCommand({
+      rootPath: repoRoot,
+      force: false,
+      yes: true,
+      isInteractive: false,
+      logLine: (line) => lines.push(line),
+      scanFn,
+    });
+
+    expect(scanFn).toHaveBeenCalledTimes(1);
+    expect(lines).toContain(`已创建项目配置: ${path.join(repoRoot, 'cwconfig.json')}`);
+    expect(lines).toContain('实际匹配预览: 3 个文件');
+  });
+
+  it('falls back to the repository scope when a new project has no src directory', async () => {
+    const repoRoot = await createRepo({
+      withConfig: false,
+      files: {
+        'main.go': 'package main\n',
+        'tools/check.py': 'print("ok")\n',
+        'app/Main.java': 'class Main {}\n',
+        'scripts/deploy.sh': '#!/bin/sh\necho deploy\n',
+        'playbooks/site.yml': '- hosts: all\n  tasks: []\n',
+      },
+    });
+    const lines: string[] = [];
+    const scanFn = vi.fn().mockResolvedValue({ ...mockStats, totalFiles: 5, added: 5 });
+
+    await runIndexCommand({
+      rootPath: repoRoot,
+      yes: true,
+      isInteractive: false,
+      logLine: (line) => lines.push(line),
+      scanFn,
+    });
+
+    expect(scanFn).toHaveBeenCalledTimes(1);
+    expect(scanFn.mock.calls[0]?.[1].precomputedFilePaths).toHaveLength(5);
+    expect(lines).toContain('推荐的 src/** 范围未匹配文件，已回退为仓库默认索引范围');
+    expect(lines).toContain('实际匹配预览: 5 个文件');
+    expect(await fs.readFile(path.join(repoRoot, 'cwconfig.json'), 'utf-8')).not.toContain(
+      'includePatterns',
+    );
   });
 
   it('builds an aggregated preview of matched directories and extensions', async () => {

@@ -16,6 +16,7 @@ import {
 } from './indexRegistry.js';
 import {
   formatProjectIndexingScope,
+  getDefaultProjectConfig,
   getRecommendedProjectConfigTemplate,
   loadProjectConfig,
   stringifyProjectConfig,
@@ -466,10 +467,20 @@ export async function runIndexCommand(options: {
 
   const configState = await ensureProjectConfigForIndex(options.rootPath);
   if (configState.kind === 'created_config') {
-    throw new Error(`已创建 ${configState.configPath}，请先检查配置后重新运行 cw index。`);
+    logLine(`已创建项目配置: ${configState.configPath}`);
+    logLine('将使用新配置继续生成索引范围预览');
   }
 
-  const preview = await buildIndexPreview(options.rootPath);
+  let preview = await buildIndexPreview(options.rootPath);
+  if (preview.totalFiles === 0 && configState.kind === 'created_config') {
+    await fs.writeFile(
+      configState.configPath,
+      stringifyProjectConfig(getDefaultProjectConfig()),
+      'utf-8',
+    );
+    logLine('推荐的 src/** 范围未匹配文件，已回退为仓库默认索引范围');
+    preview = await buildIndexPreview(options.rootPath);
+  }
   if (preview.totalFiles === 0) {
     throw new Error('Current config matches no indexable files.');
   }

@@ -51,6 +51,8 @@ describe('skill assets', () => {
     expect(content).toContain('需要理解代码库中功能如何实现');
     expect(content).toContain('使用 ContextWeaver');
     expect(content).toContain('contextweaver search');
+    expect(content).toContain('Agent 必须主动执行初始化恢复');
+    expect(content).toContain('contextweaver index /abs/path/to/repo --yes');
     expect(content).not.toContain('contextweaver_codebase-retrieval');
     await expect(fs.access(scriptPath)).resolves.toBeUndefined();
   });

@@ -154,6 +154,8 @@ ContextWeaver uses Tree-sitter to provide native AST parsing support for the fol
 | C          | Yes         | Yes               | `.c`, `.h`                    |
 | C++        | Yes         | Yes               | `.cpp`, `.hpp`, `.cc`, `.cxx` |
 | C#         | Yes         | Yes               | `.cs`, `.csx`                 |
+| Shell      | Line chunks | No             | `.sh`, `.bash`, `.zsh`        |
+| YAML/Ansible | Line chunks | No          | `.yaml`, `.yml`               |
 
 * Kotlin/Swift/Dart AST parsing depends on the `tree-sitter-kotlin` / `tree-sitter-swift` / `tree-sitter-dart` native bindings being present and loading for the current Node ABI and install environment. These conditional grammar packages are not part of the default install graph; if they are missing or cannot load, the scanner automatically falls back to line-based chunks while import resolution remains available.
 

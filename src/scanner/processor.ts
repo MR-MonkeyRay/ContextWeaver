@@ -35,6 +35,8 @@ const FALLBACK_LANGS = new Set([
   'c_sharp',
   'markdown',
   'json',
+  'bash',
+  'yaml',
 ]);
 
 /**

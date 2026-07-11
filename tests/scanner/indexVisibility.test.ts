@@ -31,6 +31,21 @@ afterEach(async () => {
 });
 
 describe('scanner visibility contracts', () => {
+  it('creates plain-text chunks for shell and Ansible YAML files', async () => {
+    const repoRoot = await createTempDir('cw-plain-text-languages-');
+    const shellPath = path.join(repoRoot, 'scripts/deploy.sh');
+    const ansiblePath = path.join(repoRoot, 'playbooks/site.yml');
+    await fs.mkdir(path.dirname(shellPath), { recursive: true });
+    await fs.mkdir(path.dirname(ansiblePath), { recursive: true });
+    await fs.writeFile(shellPath, '#!/bin/sh\necho deploy\n', 'utf-8');
+    await fs.writeFile(ansiblePath, '- hosts: all\n  tasks: []\n', 'utf-8');
+
+    const results = await processFiles(repoRoot, [shellPath, ansiblePath], new Map());
+
+    expect(results.map((result) => result.language)).toEqual(['bash', 'yaml']);
+    expect(results.every((result) => result.status === 'added')).toBe(true);
+    expect(results.every((result) => result.chunks.length > 0)).toBe(true);
+  });
   it('maps current skip causes into stable skip buckets', async () => {
     const repoRoot = await createTempDir('cw-visibility-');
     const filePaths = {

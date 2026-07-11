@@ -25,6 +25,10 @@ describe('多语言支持', () => {
       ['lib/main.dart', 'dart'],
       ['Program.cs', 'c_sharp'],
       ['script.csx', 'c_sharp'],
+      ['scripts/deploy.sh', 'bash'],
+      ['scripts/profile.bash', 'bash'],
+      ['playbooks/site.yaml', 'yaml'],
+      ['roles/web/tasks/main.yml', 'yaml'],
     ] as const;
 
     for (const [filePath, language] of cases) {

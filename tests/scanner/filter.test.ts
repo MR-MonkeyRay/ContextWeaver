@@ -152,10 +152,13 @@ describe('scanner filter', () => {
     expect(isFiltered('generated/schema.json')).toBe(false);
   });
 
-  it('rejects file types that are not in the retrievable chunk allowlist', async () => {
+  it('allows retrievable source, shell, and YAML files while rejecting unknown types', async () => {
     expect(isAllowedFile('src/app.ts')).toBe(true);
-    expect(isAllowedFile('scripts/dev.sh')).toBe(false);
-    expect(isAllowedFile('config/site.yaml')).toBe(false);
+    expect(isAllowedFile('scripts/dev.sh')).toBe(true);
+    expect(isAllowedFile('scripts/profile.bash')).toBe(true);
+    expect(isAllowedFile('config/site.yaml')).toBe(true);
+    expect(isAllowedFile('playbooks/deploy.yml')).toBe(true);
+    expect(isAllowedFile('assets/logo.png')).toBe(false);
   });
 
   it('does not allow includePatterns to re-include gitignored files', async () => {

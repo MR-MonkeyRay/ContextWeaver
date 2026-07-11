@@ -180,6 +180,8 @@ ContextWeaver 通过 Tree-sitter 原生支持以下编程语言的 AST 解析；
 | C          | ✅       | ✅          | `.c`, `.h`                    |
 | C++        | ✅       | ✅          | `.cpp`, `.hpp`, `.cc`, `.cxx` |
 | C#         | ✅       | ✅          | `.cs`, `.csx`                 |
+| Shell      | 行分片   | —           | `.sh`, `.bash`, `.zsh`        |
+| YAML/Ansible | 行分片 | —           | `.yaml`, `.yml`               |
 
 * Kotlin/Swift/Dart 的 AST 解析取决于 `tree-sitter-kotlin` / `tree-sitter-swift` / `tree-sitter-dart` 原生绑定是否存在且能在当前 Node ABI 与安装环境中加载；这些条件语法包不进入默认安装图，缺失或加载失败时扫描器会自动退回到行分片，Import 解析仍可用。
 

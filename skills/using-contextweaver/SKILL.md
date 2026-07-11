@@ -18,19 +18,18 @@ ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 
 
 ## 前置条件
 
-先确认目标仓库已经可搜索。`search-context.mjs` 不会自动初始化新项目；它只是包装 `contextweaver search`。
+先确认目标仓库已经可搜索。`search-context.mjs` 只包装 `contextweaver search`，不会在用户不知情时自动索引或发送代码。若检索报告项目尚未确认索引，Agent 必须主动执行初始化恢复；不要仅把初始化命令转述给用户。
 
 - 全局配置：运行过 `contextweaver init` 或已有 `~/.contextweaver/.env`。
 - 必要环境变量：`EMBEDDINGS_API_KEY`、`EMBEDDINGS_BASE_URL`、`EMBEDDINGS_MODEL`、`RERANK_API_KEY`、`RERANK_BASE_URL`、`RERANK_MODEL`。缺失时检索会创建示例 `.env` 后报错，不能继续声称已完成语义检索。
-- 项目配置：目标仓库根目录有 `cwconfig.json`。没有时先在仓库根目录运行 `contextweaver init-project`，检查生成的 `includePatterns`/`ignorePatterns` 是否覆盖正确代码。
+- 项目配置：目标仓库根目录通常有 `cwconfig.json`。缺失时直接运行 `contextweaver index /abs/path/to/repo`；该命令会先创建推荐配置；若 `src/**` 未匹配文件，则回退到受忽略规则和文件类型白名单约束的仓库范围，并在同一次执行中展示预览后请求确认。
 - 确认式索引：目标仓库已经成功运行过 `contextweaver index`。首次索引会预览范围并要求确认；非交互环境只有在范围已被当前任务授权且已经检查过时才使用 `contextweaver index /abs/path --yes`。
 
 常见失败处理：
 
 | 现象 | 处理 |
 | --- | --- |
-| `当前仓库尚未完成确认式索引，请先运行 cw index` | 检查/创建 `cwconfig.json`，再运行 `contextweaver index`。 |
-| `已创建 .../cwconfig.json，请先检查配置后重新运行 cw index` | 打开 `cwconfig.json`，确认索引范围，再重新执行索引。 |
+| `当前仓库尚未完成确认式索引，请先运行 cw index` | Agent 立即进入下方“初始化恢复”流程；完成后自动重试原检索。 |
 | `ContextWeaver 环境变量未配置` | 编辑 `~/.contextweaver/.env` 或设置对应环境变量后重试。 |
 | 脚本退出 1，且无法找到/启动 `contextweaver` | 安装 CLI，或设置 `CONTEXTWEAVER_BIN=/abs/path/to/contextweaver`。 |
 | 输出 JSON 前有日志行 | 忽略日志行，从第一个 `{` 开始解析 JSON；人工排查可改用 `--format text`。 |
@@ -120,20 +119,14 @@ JSON 结果的主要字段：
 3. 如果结果不相关，改写 `information-request`，减少或替换 `technical-terms` 后重试一次。
 4. 如果仍失败，说明索引可能过窄、过旧或问题更适合文本搜索；检查 `cwconfig.json`/重新索引，或退回 `rg`。
 
-## 初始化与索引操作
+## 初始化恢复
 
-当检索失败且当前任务明确需要语义上下文时，按下面顺序处理：
+当检索失败且提示项目尚未确认索引时，Agent 必须主动执行初始化恢复：
 
-```bash
-# 只在全局配置缺失时运行
-contextweaver init
-
-# 在目标仓库根目录生成项目配置；已有配置时不要覆盖
-contextweaver init-project
-
-# 检查 cwconfig.json 后建立索引
-contextweaver index
-```
+1. 检查全局 API 配置。缺失凭据时，`contextweaver init` 只能创建示例文件，不能生成真实密钥；此时说明凭据阻塞并降级到 `rg`/read。
+2. 运行 `contextweaver index /abs/path/to/repo`。项目配置缺失时，该命令会创建推荐的 `cwconfig.json`，随后继续展示实际文件范围并请求确认。
+3. 交互环境读取预览后确认；非交互环境先读取新生成的 `cwconfig.json` 并核对范围，只有范围已获当前任务授权时才使用 `--yes`。
+4. 索引成功后，自动重试原始 `search-context.mjs` 调用一次，不要要求用户重新发起任务。
 
 非交互执行时：
 
@@ -158,5 +151,5 @@ contextweaver index /abs/path/to/repo --yes
 想知道"怎么实现的"？ -> ContextWeaver
 100% 知道文件+行号？ -> read
 要统计/穷举/全替换？ -> rg
-新项目未索引？ -> init-project -> 检查 cwconfig.json -> index -> search
+新项目未索引？ -> index（自动建配置并预览）-> 确认 -> 重试 search
 ```

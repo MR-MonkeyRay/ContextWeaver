@@ -28,6 +28,11 @@ const LANGUAGE_MAP: Record<string, string> = {
   '.csx': 'c_sharp',
   '.md': 'markdown',
   '.json': 'json',
+  '.sh': 'bash',
+  '.bash': 'bash',
+  '.zsh': 'bash',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
 };
 
 /**
