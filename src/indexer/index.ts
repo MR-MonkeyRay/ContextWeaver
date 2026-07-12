@@ -94,7 +94,9 @@ export class Indexer {
     db: Database.Database,
     results: ProcessResult[],
     onProgress?: (indexed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<IndexStats> {
+    signal?.throwIfAborted();
     if (!this.vectorStore) {
       await this.init();
     }
@@ -153,6 +155,7 @@ export class Indexer {
     // 处理删除
     if (toDelete.length > 0) {
       await this.deleteFiles(db, toDelete);
+      signal?.throwIfAborted();
       stats.deleted = toDelete.length;
     }
 
@@ -165,7 +168,7 @@ export class Indexer {
 
     // 批量处理需要索引的文件
     if (toIndex.length > 0) {
-      const indexResult = await this.batchIndex(db, toIndex, onProgress);
+      const indexResult = await this.batchIndex(db, toIndex, onProgress, signal);
       stats.indexed = indexResult.success;
       stats.errors = indexResult.errors;
     }
@@ -196,6 +199,7 @@ export class Indexer {
     db: Database.Database,
     files: FileToIndex[],
     onProgress?: (indexed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<{ success: number; errors: number }> {
     if (files.length === 0) {
       return { success: 0, errors: 0 };
@@ -220,17 +224,29 @@ export class Indexer {
     let firstEmbeddingError: unknown = null;
 
     for (const windowFiles of windows) {
+      signal?.throwIfAborted();
       const windowItems = windowFiles.reduce((sum, file) => sum + file.chunks.length, 0);
       let windowCompleted = 0;
 
       try {
-        const indexedWindow = await this.indexWindow(windowFiles, batchSize, (completed, total) => {
-          const mappedCompleted = Math.min(windowItems, Math.floor((completed / total) * windowItems));
-          windowCompleted = Math.max(windowCompleted, mappedCompleted);
-          onProgress?.(completedItems + windowCompleted, totalItems);
-        });
+        const indexedWindow = await this.indexWindow(
+          windowFiles,
+          batchSize,
+          (completed, total) => {
+            signal?.throwIfAborted();
+            const mappedCompleted = Math.min(
+              windowItems,
+              Math.floor((completed / total) * windowItems),
+            );
+            windowCompleted = Math.max(windowCompleted, mappedCompleted);
+            onProgress?.(completedItems + windowCompleted, totalItems);
+          },
+          signal,
+        );
 
+        signal?.throwIfAborted();
         await this.persistWindow(db, indexedWindow);
+        signal?.throwIfAborted();
         completedItems += windowItems;
         onProgress?.(completedItems, totalItems);
         success += indexedWindow.successFiles.length;
@@ -244,9 +260,21 @@ export class Indexer {
           '索引窗口完成',
         );
       } catch (err) {
+        if (signal?.aborted) {
+          clearVectorIndexHash(
+            db,
+            windowFiles.map((f) => f.path),
+          );
+          signal.throwIfAborted();
+        }
         const error = err as { message?: string; stack?: string };
         logger.error(
-          { files: windowFiles.length, chunks: windowItems, error: error.message, stack: error.stack },
+          {
+            files: windowFiles.length,
+            chunks: windowItems,
+            error: error.message,
+            stack: error.stack,
+          },
           '索引窗口失败',
         );
         clearVectorIndexHash(
@@ -336,6 +364,7 @@ export class Indexer {
     files: FileToIndex[],
     batchSize: number,
     onProgress?: (completed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<IndexedWindow> {
     const allTexts: string[] = [];
     const globalIndexByFileChunk: number[][] = [];
@@ -350,7 +379,8 @@ export class Indexer {
       }
     }
 
-    const results = await this.embeddingClient.embedBatch(allTexts, batchSize, onProgress);
+    const results = await this.embeddingClient.embedBatch(allTexts, batchSize, onProgress, signal);
+    signal?.throwIfAborted();
     const embeddings = results.map((r) => r.embedding);
 
     const filesToUpsert: IndexedWindow['filesToUpsert'] = [];
@@ -473,9 +503,12 @@ export class Indexer {
   /**
    * 文本搜索（先 embedding 再向量搜索）
    */
-  async textSearch(query: string, limit = 10, filter?: string) {
-    const queryVector = await this.embeddingClient.embed(query);
-    return this.search(queryVector, limit, filter);
+  async textSearch(query: string, limit = 10, filter?: string, signal?: AbortSignal) {
+    const queryVector = await this.embeddingClient.embed(query, signal);
+    signal?.throwIfAborted();
+    const results = await this.search(queryVector, limit, filter);
+    signal?.throwIfAborted();
+    return results;
   }
 
   /**

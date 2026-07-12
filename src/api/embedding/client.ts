@@ -1,6 +1,6 @@
 import { type EmbeddingConfig, getEmbeddingConfig } from '../../config.js';
 import { logger } from '../../utils/logger.js';
-import { sleep } from '../shared/sleep.js';
+import { sleep, waitForPromise } from '../shared/sleep.js';
 import {
   classifyEmbeddingFailure,
   formatEmbeddingErrorMessage,
@@ -33,8 +33,8 @@ export class EmbeddingClient {
     this.rateLimiter = getRateLimitController(this.config.maxConcurrency);
   }
 
-  async embed(text: string): Promise<number[]> {
-    const results = await this.embedBatch([text]);
+  async embed(text: string, signal?: AbortSignal): Promise<number[]> {
+    const results = await this.embedBatch([text], undefined, undefined, signal);
     return results[0].embedding;
   }
 
@@ -42,7 +42,9 @@ export class EmbeddingClient {
     texts: string[],
     batchSize = this.config.batchSize,
     onProgress?: (completed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<EmbeddingResult[]> {
+    signal?.throwIfAborted();
     if (texts.length === 0) {
       return [];
     }
@@ -64,7 +66,12 @@ export class EmbeddingClient {
       );
     }
 
-    const flatResults = await this.embedFragments(fragmentPlan.allFragments, batchSize, onProgress);
+    const flatResults = await this.embedFragments(
+      fragmentPlan.allFragments,
+      batchSize,
+      onProgress,
+      signal,
+    );
     return aggregateFragmentEmbeddings(texts, fragmentPlan.fragmentMap, flatResults);
   }
 
@@ -80,6 +87,7 @@ export class EmbeddingClient {
     texts: string[],
     batchSize: number,
     onProgress?: (completed: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<EmbeddingResult[]> {
     const batches: string[][] = [];
     for (let i = 0; i < texts.length; i += batchSize) {
@@ -94,7 +102,14 @@ export class EmbeddingClient {
 
     const batchResults = await Promise.all(
       batches.map((batch, batchIndex) =>
-        this.processWithRateLimit(batch, batchIndex * batchSize, batchSize, progress, session),
+        this.processWithRateLimit(
+          batch,
+          batchIndex * batchSize,
+          batchSize,
+          progress,
+          session,
+          signal,
+        ),
       ),
     );
 
@@ -108,6 +123,7 @@ export class EmbeddingClient {
     batchSize: number,
     progress: ProgressTracker,
     session: EmbeddingSession,
+    signal?: AbortSignal,
   ): Promise<EmbeddingResult[]> {
     const maxTransientRetries = this.config.networkRetries;
     const maxRateLimitRetries = Math.max(3, this.config.networkRetries);
@@ -116,11 +132,12 @@ export class EmbeddingClient {
     let rateLimitRetries = 0;
 
     while (true) {
+      signal?.throwIfAborted();
       if (session.fatalError) {
         throw session.fatalError;
       }
 
-      await this.rateLimiter.acquire();
+      await this.rateLimiter.acquire(signal);
 
       if (session.fatalError) {
         this.rateLimiter.releaseFailure();
@@ -128,7 +145,14 @@ export class EmbeddingClient {
       }
 
       try {
-        const result = await this.processBatch(texts, startIndex, batchSize, progress, session);
+        const result = await this.processBatch(
+          texts,
+          startIndex,
+          batchSize,
+          progress,
+          session,
+          signal,
+        );
 
         if (session.fatalError) {
           this.rateLimiter.releaseFailure();
@@ -138,6 +162,10 @@ export class EmbeddingClient {
         this.rateLimiter.releaseSuccess();
         return result;
       } catch (err) {
+        if (signal?.aborted) {
+          this.rateLimiter.releaseFailure();
+          signal.throwIfAborted();
+        }
         if (session.fatalError) {
           this.rateLimiter.releaseFailure();
           throw session.fatalError;
@@ -160,7 +188,7 @@ export class EmbeddingClient {
           if (rateLimitRetries < maxRateLimitRetries) {
             rateLimitRetries++;
             this.rateLimiter.releaseForRetry();
-            await this.rateLimiter.triggerRateLimit();
+            await waitForPromise(this.rateLimiter.triggerRateLimit(), signal);
             networkRetries = 0;
           } else {
             const sessionError = this.failSession(session, err);
@@ -187,8 +215,11 @@ export class EmbeddingClient {
           );
 
           this.rateLimiter.releaseForRetry();
-          const cooldownMs = await this.rateLimiter.triggerNetworkCooldown(delayMs);
-          await sleep(Math.max(0, delayMs - cooldownMs));
+          const cooldownMs = await waitForPromise(
+            this.rateLimiter.triggerNetworkCooldown(delayMs),
+            signal,
+          );
+          await sleep(Math.max(0, delayMs - cooldownMs), signal);
         } else {
           const sessionError = this.failSession(session, err);
           this.rateLimiter.releaseFailure();
@@ -205,8 +236,7 @@ export class EmbeddingClient {
 
   private getRetryDelayMs(retry: number): number {
     return (
-      this.config.retryBaseDelayMs +
-      this.config.retryIntervalIncrementMs * Math.max(0, retry - 1)
+      this.config.retryBaseDelayMs + this.config.retryIntervalIncrementMs * Math.max(0, retry - 1)
     );
   }
 
@@ -216,6 +246,7 @@ export class EmbeddingClient {
     batchSize: number,
     progress: Pick<ProgressTracker, 'recordBatch'>,
     session: EmbeddingSession,
+    signal?: AbortSignal,
   ): Promise<EmbeddingResult[]> {
     const { results, totalTokens } = await processEmbeddingBatch({
       config: this.config,
@@ -223,6 +254,7 @@ export class EmbeddingClient {
       startIndex,
       batchSize,
       session,
+      signal,
     });
 
     if (session.fatalError) {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureSearchableProject } from '../cli.js';
 import { getProjectIdentity } from '../db/index.js';
 import type { ContextPack, SearchConfig, Segment } from '../search/types.js';
 import { logger } from '../utils/logger.js';
@@ -51,6 +52,22 @@ const BASE_DIR = path.join(os.homedir(), '.contextweaver');
 const INDEX_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const BACKGROUND_INDEX_COOLDOWN_MS = 60 * 1000;
 const backgroundIndexStartedAt = new Map<string, number>();
+
+export function markBackgroundIndexFresh(repoPath: string): void {
+  const projectId = getProjectIdentity(repoPath).projectId;
+  const timestamp = Date.now();
+  backgroundIndexStartedAt.set(projectId, timestamp);
+
+  try {
+    const requestPath = getBackgroundIndexRequestPath(projectId);
+    ensurePrivateDirSync(BASE_DIR);
+    ensurePrivateDirSync(path.dirname(requestPath));
+    writePrivateFileSync(requestPath, JSON.stringify({ pid: process.pid, timestamp }));
+  } catch (err) {
+    const error = err as { message?: string };
+    logger.debug({ projectId: projectId.slice(0, 10), error: error.message }, '记录索引冷却失败');
+  }
+}
 
 async function ensureDefaultEnvFile(): Promise<void> {
   const configDir = BASE_DIR;
@@ -229,6 +246,7 @@ async function ensureIndexed(
   repoPath: string,
   projectId: string,
   onProgress?: (current: number, total?: number, message?: string) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const { withLock } = await import('../utils/lock.js');
   const { scan } = await import('../scanner/index.js');
@@ -237,6 +255,7 @@ async function ensureIndexed(
     projectId,
     'index',
     async () => {
+      signal?.throwIfAborted();
       const wasIndexed = isProjectIndexed(projectId);
 
       if (!wasIndexed) {
@@ -248,7 +267,8 @@ async function ensureIndexed(
       }
 
       const startTime = Date.now();
-      const stats = await scan(repoPath, { vectorIndex: true, onProgress });
+      const stats = await scan(repoPath, { vectorIndex: true, onProgress, signal });
+      signal?.throwIfAborted();
       const elapsed = Date.now() - startTime;
 
       logger.info(
@@ -266,6 +286,7 @@ async function ensureIndexed(
       );
     },
     INDEX_LOCK_TIMEOUT_MS,
+    signal,
   );
 }
 
@@ -373,8 +394,14 @@ export async function retrieveCodeContext(
   options?: {
     onProgress?: (current: number, total?: number, message?: string) => void;
     configOverride?: Partial<SearchConfig>;
+    signal?: AbortSignal;
+    skipBackgroundIndex?: boolean;
   },
 ): Promise<SearchResult> {
+  options?.signal?.throwIfAborted();
+  await ensureSearchableProject(input.repoPath);
+  options?.signal?.throwIfAborted();
+
   const { checkEmbeddingEnv, checkRerankerEnv } = await import('../config.js');
   const embeddingCheck = checkEmbeddingEnv();
   const rerankerCheck = checkRerankerEnv();
@@ -387,14 +414,15 @@ export async function retrieveCodeContext(
 
   const projectId = getProjectIdentity(input.repoPath).projectId;
   if (!isProjectIndexed(projectId)) {
-    await ensureIndexed(input.repoPath, projectId, options?.onProgress);
-  } else {
+    await ensureIndexed(input.repoPath, projectId, options?.onProgress, options?.signal);
+  } else if (!options?.skipBackgroundIndex) {
     logger.debug({ projectId: projectId.slice(0, 10) }, '命中已有索引，跳过同步增量索引');
     void scheduleBackgroundIndex(input.repoPath, projectId).catch((err) => {
       const error = err as { message?: string };
       logger.warn({ projectId: projectId.slice(0, 10), error: error.message }, '启动后台索引失败');
     });
   }
+  options?.signal?.throwIfAborted();
 
   const query = [input.informationRequest, ...(input.technicalTerms || [])]
     .filter(Boolean)
@@ -404,7 +432,9 @@ export async function retrieveCodeContext(
   const service = new SearchService(projectId, input.repoPath, options?.configOverride);
   try {
     await service.init();
-    const pack = await service.buildContextPack(query);
+    options?.signal?.throwIfAborted();
+    const pack = await service.buildContextPack(query, options?.signal);
+    options?.signal?.throwIfAborted();
     return buildSearchResult(pack);
   } finally {
     service.close();

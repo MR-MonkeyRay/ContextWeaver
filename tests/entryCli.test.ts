@@ -106,6 +106,14 @@ describe('CLI entry smoke tests', () => {
     }
   });
 
+  it('advertises the MCP server command in top-level help', () => {
+    const result = runEntry(['--help']);
+
+    expectHelpSurface(result);
+    expect(result.output).toContain('mcp');
+    expect(result.output).toContain('启动 MCP 服务器');
+  });
+
   it('keeps the version shortcut output stable', async () => {
     const version = await readPackageVersion();
 

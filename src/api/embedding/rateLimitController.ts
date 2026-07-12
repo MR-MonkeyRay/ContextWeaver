@@ -1,5 +1,5 @@
 import { logger } from '../../utils/logger.js';
-import { sleep } from '../shared/sleep.js';
+import { sleep, waitForPromise } from '../shared/sleep.js';
 
 export interface RateLimitStatus {
   isPaused: boolean;
@@ -27,15 +27,16 @@ export class RateLimitController {
     this.currentConcurrency = maxConcurrency;
   }
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.pausePromise) {
-      await this.pausePromise;
+      await waitForPromise(this.pausePromise, signal);
     }
 
     while (this.activeRequests >= this.currentConcurrency) {
-      await sleep(50);
+      await sleep(50, signal);
       if (this.pausePromise) {
-        await this.pausePromise;
+        await waitForPromise(this.pausePromise, signal);
       }
     }
 

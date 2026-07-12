@@ -83,12 +83,14 @@ export class SearchService {
   /**
    * 构建上下文包（用于问答/生成）
    */
-  async buildContextPack(query: string): Promise<ContextPack> {
+  async buildContextPack(query: string, signal?: AbortSignal): Promise<ContextPack> {
+    signal?.throwIfAborted();
     const timingMs: Record<string, number> = {};
     let t0 = Date.now();
 
     // 1. 混合召回
-    const candidates = await this.hybridRetrieve(query);
+    const candidates = await this.hybridRetrieve(query, signal);
+    signal?.throwIfAborted();
     timingMs.retrieve = Date.now() - t0;
 
     // 2. 取 topM
@@ -96,7 +98,8 @@ export class SearchService {
     const topM = candidates.sort((a, b) => b.score - a.score).slice(0, this.config.fusedTopM);
 
     // 3. Rerank → seeds
-    const reranked = await this.rerank(query, topM);
+    const reranked = await this.rerank(query, topM, signal);
+    signal?.throwIfAborted();
     timingMs.rerank = Date.now() - t0;
 
     // 4. Smart TopK Cutoff
@@ -107,13 +110,15 @@ export class SearchService {
     // 5. 扩展（Phase 2 实现）
     t0 = Date.now();
     const queryTokens = this.extractQueryTokens(query);
-    const expanded = await this.expand(seeds, queryTokens);
+    const expanded = await this.expand(seeds, queryTokens, signal);
+    signal?.throwIfAborted();
     timingMs.expand = Date.now() - t0;
 
     // 6. 打包
     t0 = Date.now();
     const packer = new ContextPacker(this.projectId, this.config);
     const files = await packer.pack([...seeds, ...expanded]);
+    signal?.throwIfAborted();
     timingMs.pack = Date.now() - t0;
 
     return {
@@ -134,12 +139,17 @@ export class SearchService {
   /**
    * 混合召回：向量 + 词法
    */
-  private async hybridRetrieve(query: string): Promise<ScoredChunk[]> {
+  private async hybridRetrieve(query: string, signal?: AbortSignal): Promise<ScoredChunk[]> {
     // 并行执行向量和词法召回
-    const [vectorResults, lexicalResults] = await Promise.all([
-      this.vectorRetrieve(query),
-      this.lexicalRetrieve(query),
+    const [vectorResult, lexicalResult] = await Promise.allSettled([
+      this.vectorRetrieve(query, signal),
+      this.lexicalRetrieve(query, signal),
     ]);
+    signal?.throwIfAborted();
+    if (vectorResult.status === 'rejected') throw vectorResult.reason;
+    if (lexicalResult.status === 'rejected') throw lexicalResult.reason;
+    const vectorResults = vectorResult.value;
+    const lexicalResults = lexicalResult.value;
 
     logger.debug(
       {
@@ -161,10 +171,11 @@ export class SearchService {
   /**
    * 向量召回
    */
-  private async vectorRetrieve(query: string): Promise<ScoredChunk[]> {
+  private async vectorRetrieve(query: string, signal?: AbortSignal): Promise<ScoredChunk[]> {
     if (!this.indexer) throw new Error('SearchService not initialized');
 
-    const results = await this.indexer.textSearch(query, this.config.vectorTopK);
+    const results = await this.indexer.textSearch(query, this.config.vectorTopK, undefined, signal);
+    signal?.throwIfAborted();
     if (!results) return [];
 
     // 按距离排序并转换
@@ -187,17 +198,18 @@ export class SearchService {
    * 优先使用 chunk 级 FTS（更精准）
    * 如果 chunks_fts 不可用，降级到文件级 FTS + overlap 下钻
    */
-  private async lexicalRetrieve(query: string): Promise<ScoredChunk[]> {
+  private async lexicalRetrieve(query: string, signal?: AbortSignal): Promise<ScoredChunk[]> {
+    signal?.throwIfAborted();
     if (!this.db || !this.vectorStore) return [];
 
     // 优先尝试 chunk 级 FTS（更精准）
     if (isChunksFtsInitialized(this.db)) {
-      return this.lexicalRetrieveFromChunksFts(query);
+      return this.lexicalRetrieveFromChunksFts(query, signal);
     }
 
     // 降级到文件级 FTS + overlap 下钻
     if (isFtsInitialized(this.db)) {
-      return this.lexicalRetrieveFromFilesFts(query);
+      return this.lexicalRetrieveFromFilesFts(query, signal);
     }
 
     logger.debug('FTS 未初始化，跳过词法召回');
@@ -207,7 +219,11 @@ export class SearchService {
   /**
    * 从 chunks_fts 直接搜索（最优方案）
    */
-  private async lexicalRetrieveFromChunksFts(query: string): Promise<ScoredChunk[]> {
+  private async lexicalRetrieveFromChunksFts(
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<ScoredChunk[]> {
+    signal?.throwIfAborted();
     // db 在 init() 中已初始化
     const chunkResults = searchChunksFts(
       this.db as Database.Database,
@@ -235,6 +251,7 @@ export class SearchService {
     // 从 VectorStore 批量获取完整的 chunk 信息（性能优化：N 次查询 → 1 次）
     const allFilePaths = Array.from(fileChunksMap.keys());
     const chunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
+    signal?.throwIfAborted();
     if (!chunksMap) return allChunks;
 
     for (const [filePath, chunkScores] of fileChunksMap) {
@@ -271,7 +288,11 @@ export class SearchService {
   /**
    * 从 files_fts 搜索 + overlap 下钻（降级方案）
    */
-  private async lexicalRetrieveFromFilesFts(query: string): Promise<ScoredChunk[]> {
+  private async lexicalRetrieveFromFilesFts(
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<ScoredChunk[]> {
+    signal?.throwIfAborted();
     // 1. FTS 搜索文件
     // db 在 init() 中已初始化
     const fileResults = searchFilesFts(
@@ -300,9 +321,11 @@ export class SearchService {
     let skippedFiles = 0;
 
     for (const { path: filePath, score: fileScore } of fileResults) {
+      signal?.throwIfAborted();
       if (totalChunks >= this.config.lexTotalChunks) break;
 
       const chunks = await this.vectorStore?.getFileChunks(filePath);
+      signal?.throwIfAborted();
       if (!chunks || chunks.length === 0) continue;
 
       // 对每个 chunk 计算 token overlap 得分
@@ -497,7 +520,11 @@ export class SearchService {
   /**
    * Rerank
    */
-  private async rerank(query: string, candidates: ScoredChunk[]): Promise<ScoredChunk[]> {
+  private async rerank(
+    query: string,
+    candidates: ScoredChunk[],
+    signal?: AbortSignal,
+  ): Promise<ScoredChunk[]> {
     if (candidates.length === 0) return [];
 
     const reranker = getRerankerClient();
@@ -513,7 +540,9 @@ export class SearchService {
 
     const reranked = await reranker.rerankWithData(query, candidates, textExtractor, {
       topN: this.config.rerankTopN,
+      signal,
     });
+    signal?.throwIfAborted();
 
     return reranked
       .filter((r) => r.data !== undefined)
@@ -674,12 +703,18 @@ export class SearchService {
    * - E2: breadcrumb 补段
    * - E3: 相对路径 import 解析
    */
-  private async expand(seeds: ScoredChunk[], queryTokens?: Set<string>): Promise<ScoredChunk[]> {
+  private async expand(
+    seeds: ScoredChunk[],
+    queryTokens?: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<ScoredChunk[]> {
+    signal?.throwIfAborted();
     if (seeds.length === 0) return [];
 
     const expander = await getGraphExpander(this.projectId, this.config);
     try {
-      const { chunks, stats } = await expander.expand(seeds, queryTokens);
+      const { chunks, stats } = await expander.expand(seeds, queryTokens, signal);
+      signal?.throwIfAborted();
 
       logger.debug(stats, '上下文扩展统计');
 

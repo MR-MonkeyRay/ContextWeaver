@@ -21,9 +21,11 @@ export async function processEmbeddingBatch(options: {
   startIndex: number;
   batchSize: number;
   session: EmbeddingSession;
+  signal?: AbortSignal;
 }): Promise<{ results: EmbeddingResult[]; totalTokens: number }> {
-  const { config, texts, startIndex, batchSize, session } = options;
+  const { config, texts, startIndex, batchSize, session, signal } = options;
 
+  signal?.throwIfAborted();
   if (session.fatalError) {
     throw session.fatalError;
   }
@@ -52,6 +54,11 @@ export async function processEmbeddingBatch(options: {
         }, config.requestTimeoutMs)
       : null;
   session.controllers.add(controller);
+  const abortRequest = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', abortRequest, { once: true });
+  if (signal?.aborted) {
+    abortRequest();
+  }
 
   try {
     const response = await fetch(config.baseUrl, {
@@ -63,8 +70,10 @@ export async function processEmbeddingBatch(options: {
       body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
+    signal?.throwIfAborted();
 
     const data = await readEmbeddingResponse(response, requestContext);
+    signal?.throwIfAborted();
 
     if (!response.ok || data.error) {
       const upstreamMessage = data.error?.message || `HTTP ${response.status}`;
@@ -93,6 +102,7 @@ export async function processEmbeddingBatch(options: {
       totalTokens: data.usage?.total_tokens || 0,
     };
   } catch (err) {
+    signal?.throwIfAborted();
     if (err instanceof EmbeddingFatalError) {
       throw err;
     }
@@ -115,6 +125,7 @@ export async function processEmbeddingBatch(options: {
       clearTimeout(timeout);
     }
     session.controllers.delete(controller);
+    signal?.removeEventListener('abort', abortRequest);
   }
 }
 

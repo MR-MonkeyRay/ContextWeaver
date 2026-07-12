@@ -20,7 +20,8 @@ export class RerankerClient {
       return [];
     }
 
-    const { topN = this.config.topN, maxChunksPerDoc, chunkOverlap, retries = 3 } = options;
+    const { topN = this.config.topN, maxChunksPerDoc, chunkOverlap, retries = 3, signal } = options;
+    signal?.throwIfAborted();
     const requestBody: RerankRequest = {
       model: this.config.model,
       query,
@@ -38,7 +39,7 @@ export class RerankerClient {
 
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const data = await requestRerank(this.config, requestBody);
+        const data = await requestRerank(this.config, requestBody, signal);
         const results: RerankedDocument[] = data.results.map((item) => ({
           originalIndex: item.index,
           score: item.relevance_score,
@@ -56,6 +57,7 @@ export class RerankerClient {
 
         return results;
       } catch (err) {
+        signal?.throwIfAborted();
         const error = err as { message?: string; stack?: string };
         const isRateLimited = error.message?.includes('429') || error.message?.includes('rate');
 
@@ -65,7 +67,7 @@ export class RerankerClient {
             { attempt, maxRetries: retries, delay, error: error.message },
             'Rerank 请求失败，准备重试',
           );
-          await sleep(delay);
+          await sleep(delay, signal);
         } else {
           logger.error(
             {

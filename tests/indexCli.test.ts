@@ -9,6 +9,7 @@ import {
   deleteIndexedProjectDirectory,
   ensureProjectConfigForIndex,
   ensureSearchableProject,
+  IndexAlreadyConfirmedError,
   initProjectConfigCommand,
   installBundledSkills,
   prepareSkillInstallTarget,
@@ -451,17 +452,134 @@ describe('cli helpers', () => {
   it('does not start indexing when preview confirmation is rejected', async () => {
     const repoRoot = await createRepo();
     const scanFn = vi.fn();
+    const confirmIndex = vi.fn(async () => false);
 
     await expect(
       runIndexCommand({
         rootPath: repoRoot,
         force: false,
-        isInteractive: true,
-        confirmIndex: async () => false,
+        isInteractive: false,
+        confirmIndex,
         scanFn,
       }),
     ).rejects.toThrow('Index confirmation declined');
+    expect(confirmIndex).toHaveBeenCalledTimes(1);
     expect(scanFn).not.toHaveBeenCalled();
+  });
+
+  it('uses a confirmation callback exactly once in non-interactive mode with full preview context', async () => {
+    const repoRoot = await createRepo({ withConfig: false });
+    const identity = {
+      projectId: 'confirm123',
+      projectPath: repoRoot,
+      pathBirthtimeMs: 42,
+    };
+    const scanFn = vi.fn().mockResolvedValue(mockStats);
+    const recordIndexedProjectFn = vi.fn().mockResolvedValue(undefined);
+    const confirmIndex = vi.fn(async () => true);
+
+    await runIndexCommand({
+      rootPath: repoRoot,
+      identity,
+      isInteractive: false,
+      confirmIndex,
+      scanFn,
+      recordIndexedProjectFn,
+    });
+
+    expect(confirmIndex).toHaveBeenCalledTimes(1);
+    expect(confirmIndex).toHaveBeenCalledWith({
+      rootPath: repoRoot,
+      identity,
+      preview: expect.objectContaining({
+        totalFiles: 3,
+        matchedFilePaths: expect.arrayContaining([
+          path.join(repoRoot, 'src/app.ts'),
+          path.join(repoRoot, 'src/config.json'),
+          path.join(repoRoot, 'src/nested/util.ts'),
+        ]),
+        samplePaths: ['src/app.ts', 'src/config.json', 'src/nested/util.ts'],
+      }),
+      scopeLines: expect.arrayContaining(['索引范围:', '  - include: src/**']),
+      projectConfigCreated: true,
+    });
+    expect(scanFn).toHaveBeenCalledTimes(1);
+    expect(recordIndexedProjectFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates confirmation callback failures without starting indexing', async () => {
+    const repoRoot = await createRepo();
+    const scanFn = vi.fn();
+    const confirmIndex = vi.fn(async () => {
+      throw new Error('confirmation transport failed');
+    });
+
+    await expect(
+      runIndexCommand({
+        rootPath: repoRoot,
+        isInteractive: false,
+        confirmIndex,
+        scanFn,
+      }),
+    ).rejects.toThrow('confirmation transport failed');
+
+    expect(confirmIndex).toHaveBeenCalledTimes(1);
+    expect(scanFn).not.toHaveBeenCalled();
+  });
+
+  it('indexes the exact file preview accepted by the confirmation callback', async () => {
+    const repoRoot = await createRepo();
+    const scanFn = vi.fn().mockResolvedValue(mockStats);
+    const recordIndexedProjectFn = vi.fn().mockResolvedValue(undefined);
+    let acceptedPreview:
+      | {
+          matchedFilePaths: string[];
+        }
+      | undefined;
+
+    await runIndexCommand({
+      rootPath: repoRoot,
+      isInteractive: false,
+      confirmIndex: async (context) => {
+        acceptedPreview = context.preview;
+        return true;
+      },
+      scanFn,
+      recordIndexedProjectFn,
+    });
+
+    expect(acceptedPreview).toBeDefined();
+    expect(scanFn.mock.calls[0]?.[1].precomputedFilePaths).toBe(acceptedPreview?.matchedFilePaths);
+  });
+
+  it('forwards numeric scan progress to the caller without suppressing repeated messages', async () => {
+    const repoRoot = await createRepo();
+    const onProgress = vi.fn();
+    const scanFn = vi.fn(
+      async (
+        _rootPath: string,
+        options: {
+          onProgress?: (current: number, total?: number, message?: string) => void;
+        },
+      ) => {
+        options.onProgress?.(1, 3, '正在处理文件');
+        options.onProgress?.(2, 3, '正在处理文件');
+        return mockStats;
+      },
+    );
+
+    await runIndexCommand({
+      rootPath: repoRoot,
+      yes: true,
+      isInteractive: false,
+      onProgress,
+      scanFn,
+      recordIndexedProjectFn: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 1, 3, '正在处理文件');
+    expect(onProgress).toHaveBeenNthCalledWith(2, 2, 3, '正在处理文件');
   });
 
   it('renders actual matched paths before asking for confirmation', async () => {
@@ -523,7 +641,34 @@ describe('cli helpers', () => {
 
     const projects = await listIndexedProjects();
     expect(projects).toHaveLength(1);
-    expect(await isIndexedProjectConfirmed(projects[0]!.projectId)).toBe(true);
+    const project = projects[0];
+    expect(project).toBeDefined();
+    if (!project) throw new Error('索引项目不存在');
+    expect(await isIndexedProjectConfirmed(project.projectId)).toBe(true);
+  });
+
+  it('serializes concurrent first-index retries and scans only once', async () => {
+    const repoRoot = await createRepo();
+    const scanFn = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return mockStats;
+    });
+    const options = {
+      rootPath: repoRoot,
+      force: false,
+      isInteractive: false,
+      skipIfAlreadyConfirmed: true,
+      confirmIndex: async () => true,
+      scanFn,
+    };
+
+    const results = await Promise.allSettled([runIndexCommand(options), runIndexCommand(options)]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected?.reason).toBeInstanceOf(IndexAlreadyConfirmedError);
+    expect(scanFn).toHaveBeenCalledTimes(1);
+    await expect(ensureSearchableProject(repoRoot)).resolves.toBeUndefined();
   });
 
   it('prints a failure verdict with stage context and no success summary on fatal embedding failure', async () => {

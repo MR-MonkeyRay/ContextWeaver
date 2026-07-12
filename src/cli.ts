@@ -259,13 +259,23 @@ export async function ensureProjectConfigForIndex(
   return { kind: 'created_config', configPath };
 }
 
-export async function buildIndexPreview(rootPath: string): Promise<{
+export interface IndexPreview {
   matchedFilePaths: string[];
   totalFiles: number;
   directorySummaries: string[];
   extensionSummaries: string[];
   samplePaths: string[];
-}> {
+}
+
+export interface IndexConfirmationContext {
+  rootPath: string;
+  identity: ProjectIdentity;
+  preview: IndexPreview;
+  scopeLines: string[];
+  projectConfigCreated: boolean;
+}
+
+export async function buildIndexPreview(rootPath: string): Promise<IndexPreview> {
   await initFilter(rootPath);
   const { filePaths, relativePaths } = await crawl(rootPath);
 
@@ -337,6 +347,29 @@ export async function recordIndexedProject(
   });
 }
 
+const INDEX_AUTHORIZATION_REQUIRED_MESSAGE = '当前仓库尚未完成确认式索引，请先运行 `cw index`。';
+
+export class IndexAuthorizationRequiredError extends Error {
+  constructor() {
+    super(INDEX_AUTHORIZATION_REQUIRED_MESSAGE);
+    this.name = 'IndexAuthorizationRequiredError';
+  }
+}
+
+export class IndexConfirmationDeclinedError extends Error {
+  constructor() {
+    super('Index confirmation declined');
+    this.name = 'IndexConfirmationDeclinedError';
+  }
+}
+
+export class IndexAlreadyConfirmedError extends Error {
+  constructor() {
+    super('Index was confirmed while waiting for the project lock');
+    this.name = 'IndexAlreadyConfirmedError';
+  }
+}
+
 export async function ensureSearchableProject(rootPath: string): Promise<void> {
   const configPath = path.join(rootPath, 'cwconfig.json');
   try {
@@ -344,14 +377,14 @@ export async function ensureSearchableProject(rootPath: string): Promise<void> {
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'ENOENT') {
-      throw new Error('当前仓库尚未完成确认式索引，请先运行 `cw index`。');
+      throw new IndexAuthorizationRequiredError();
     }
     throw error;
   }
 
   const identity = getProjectIdentity(rootPath);
   if (!(await isIndexedProjectConfirmed(identity.projectId))) {
-    throw new Error('当前仓库尚未完成确认式索引，请先运行 `cw index`。');
+    throw new IndexAuthorizationRequiredError();
   }
 }
 
@@ -452,8 +485,11 @@ export async function runIndexCommand(options: {
   force?: boolean;
   yes?: boolean;
   isInteractive?: boolean;
-  confirmIndex?: () => Promise<boolean>;
+  confirmIndex?: (context: IndexConfirmationContext) => Promise<boolean>;
   logLine?: (line: string) => void;
+  onProgress?: (current: number, total?: number, message?: string) => void;
+  signal?: AbortSignal;
+  skipIfAlreadyConfirmed?: boolean;
   scanFn?: (rootPath: string, options: ScanOptions) => Promise<ScanStats>;
   recordIndexedProjectFn?: (
     rootPath: string,
@@ -461,6 +497,7 @@ export async function runIndexCommand(options: {
   ) => Promise<void>;
   identity?: ProjectIdentity;
 }): Promise<ScanStats> {
+  options.signal?.throwIfAborted();
   const logLine = options.logLine ?? ((line: string) => logger.info(line));
   const isInteractive = options.isInteractive ?? Boolean(stdin.isTTY && stdout.isTTY);
   const identity = options.identity ?? getProjectIdentity(options.rootPath);
@@ -490,7 +527,8 @@ export async function runIndexCommand(options: {
   if (options.force) {
     logLine('强制重新索引: 是');
   }
-  for (const line of await buildIndexScopeLogLines(options.rootPath)) {
+  const scopeLines = await buildIndexScopeLogLines(options.rootPath);
+  for (const line of scopeLines) {
     logLine(line);
   }
   logLine(`实际匹配预览: ${preview.totalFiles} 个文件`);
@@ -502,42 +540,73 @@ export async function runIndexCommand(options: {
     logLine(`- ${samplePath}`);
   }
 
+  const confirmationContext: IndexConfirmationContext = {
+    rootPath: options.rootPath,
+    identity,
+    preview,
+    scopeLines,
+    projectConfigCreated: configState.kind === 'created_config',
+  };
+
+  options.signal?.throwIfAborted();
   if (!options.yes) {
-    if (!isInteractive) {
+    if (!options.confirmIndex && !isInteractive) {
       throw new Error('Non-interactive index preview requires --yes');
     }
 
-    const confirmed = await (options.confirmIndex ?? defaultConfirmIndex)();
+    const confirmed = options.confirmIndex
+      ? await options.confirmIndex(confirmationContext)
+      : await defaultConfirmIndex();
     if (!confirmed) {
-      throw new Error('Index confirmation declined');
+      throw new IndexConfirmationDeclinedError();
     }
   }
 
   const { withLock } = await import('./utils/lock.js');
   let lastProgressMessage: string | undefined;
-  const confirmedAt = new Date().toISOString();
   const stats = await withLock(
     identity.projectId,
     'index',
-    async () =>
-      (options.scanFn ?? scan)(options.rootPath, {
+    async () => {
+      options.signal?.throwIfAborted();
+
+      if (options.skipIfAlreadyConfirmed) {
+        let authorizationRequired = false;
+        try {
+          await ensureSearchableProject(options.rootPath);
+        } catch (error) {
+          if (!(error instanceof IndexAuthorizationRequiredError)) {
+            throw error;
+          }
+          authorizationRequired = true;
+        }
+
+        if (!authorizationRequired) {
+          throw new IndexAlreadyConfirmedError();
+        }
+      }
+
+      const scanStats = await (options.scanFn ?? scan)(options.rootPath, {
         force: options.force,
         precomputedFilePaths: preview.matchedFilePaths,
-        onProgress: (_current, _total, message) => {
-          if (!message) {
-            return;
-          }
+        signal: options.signal,
+        onProgress: (current, total, message) => {
+          options.signal?.throwIfAborted();
+          options.onProgress?.(current, total, message);
 
-          if (message === lastProgressMessage) {
-            return;
+          if (message && message !== lastProgressMessage) {
+            lastProgressMessage = message;
+            logLine(message);
           }
-
-          lastProgressMessage = message;
-          logLine(message);
         },
-      }),
+      });
+      await (options.recordIndexedProjectFn ?? recordIndexedProject)(options.rootPath, {
+        confirmedAt: new Date().toISOString(),
+      });
+      return scanStats;
+    },
     getIndexLockTimeoutMs(),
+    options.signal,
   );
-  await (options.recordIndexedProjectFn ?? recordIndexedProject)(options.rootPath, { confirmedAt });
   return stats;
 }

@@ -37,4 +37,26 @@ describe('RerankerClient entrypoint', () => {
       },
     ]);
   });
+
+  it('aborts an in-flight rerank request when the caller cancels', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    global.fetch = fetchMock;
+    const client = new RerankerClient({
+      apiKey: 'test-key',
+      baseUrl: 'https://example.com/rerank',
+      model: 'test-reranker',
+      topN: 5,
+    });
+    const request = client.rerank('query', ['a'], { signal: controller.signal });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort(new Error('client cancelled'));
+
+    await expect(request).rejects.toThrow('client cancelled');
+  });
 });

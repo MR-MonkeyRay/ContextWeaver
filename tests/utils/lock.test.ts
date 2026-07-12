@@ -107,4 +107,26 @@ describe('withLock', () => {
 
     await expect(fs.access(targetLockPath)).rejects.toThrow();
   });
+  it('aborts promptly while waiting for a held lock', async () => {
+    const { withLock } = await loadLockModule();
+    const projectId = 'cancel-wait';
+    let release: (() => void) | undefined;
+    const held = withLock(
+      projectId,
+      'index',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await vi.waitFor(() => fs.access(lockPath(projectId)));
+
+    const controller = new AbortController();
+    const waiting = withLock(projectId, 'index', async () => {}, 10_000, controller.signal);
+    controller.abort();
+
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+    release?.();
+    await held;
+  });
 });

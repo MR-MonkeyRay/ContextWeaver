@@ -2,7 +2,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { getProjectIdentity } from './db/index.js';
+import { withLock } from './utils/lock.js';
 import { ensurePrivateDir, writePrivateFile } from './utils/privateStorage.js';
+
+const REGISTRY_LOCK_ID = '.registry';
 
 export interface IndexedProjectRecord {
   projectId: string;
@@ -111,11 +114,16 @@ async function writeRegistry(records: IndexedProjectRecord[]): Promise<void> {
   const sorted = records
     .map(normalizeRecord)
     .sort((a, b) => a.projectPath.localeCompare(b.projectPath));
-  await writePrivateFile(
-    registryPath,
-    `${JSON.stringify({ version: 1, indexes: sorted }, null, 2)}
-`,
-  );
+  const tempPath = `${registryPath}.${process.pid}.tmp`;
+  const data = `${JSON.stringify({ version: 1, indexes: sorted }, null, 2)}\n`;
+
+  try {
+    await writePrivateFile(tempPath, data);
+    await fs.rename(tempPath, registryPath);
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 
 export async function listIndexedProjects(): Promise<IndexedProjectRecord[]> {
@@ -124,22 +132,26 @@ export async function listIndexedProjects(): Promise<IndexedProjectRecord[]> {
 }
 
 export async function upsertIndexedProject(record: IndexedProjectRecord): Promise<void> {
-  const registry = await readRegistry();
-  const normalized = normalizeRecord(record);
-  const indexes = registry.indexes.filter((item) => item.projectId !== normalized.projectId);
-  indexes.push(normalized);
-  await writeRegistry(indexes);
+  await withLock(REGISTRY_LOCK_ID, 'registry', async () => {
+    const registry = await readRegistry();
+    const normalized = normalizeRecord(record);
+    const indexes = registry.indexes.filter((item) => item.projectId !== normalized.projectId);
+    indexes.push(normalized);
+    await writeRegistry(indexes);
+  });
 }
 
 export async function markIndexedProjectConfirmed(
   projectId: string,
   confirmedAt: string,
 ): Promise<void> {
-  const registry = await readRegistry();
-  const indexes = registry.indexes.map((item) =>
-    item.projectId === projectId ? { ...item, confirmedAt } : item,
-  );
-  await writeRegistry(indexes);
+  await withLock(REGISTRY_LOCK_ID, 'registry', async () => {
+    const registry = await readRegistry();
+    const indexes = registry.indexes.map((item) =>
+      item.projectId === projectId ? { ...item, confirmedAt } : item,
+    );
+    await writeRegistry(indexes);
+  });
 }
 
 export async function isIndexedProjectConfirmed(projectId: string): Promise<boolean> {
@@ -175,6 +187,8 @@ export async function findStaleIndexedProjects(): Promise<IndexedProjectRecord[]
 }
 
 export async function removeIndexedProjects(projectIds: string[]): Promise<void> {
-  const registry = await readRegistry();
-  await writeRegistry(registry.indexes.filter((item) => !projectIds.includes(item.projectId)));
+  await withLock(REGISTRY_LOCK_ID, 'registry', async () => {
+    const registry = await readRegistry();
+    await writeRegistry(registry.indexes.filter((item) => !projectIds.includes(item.projectId)));
+  });
 }

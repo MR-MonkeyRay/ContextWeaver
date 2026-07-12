@@ -3,16 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProjectIdentity } from '../../src/db/index.js';
+import { upsertIndexedProject } from '../../src/indexRegistry.js';
 import type { ContextPack } from '../../src/search/types.js';
 
-const { serviceBuildContextPackMock, serviceCloseMock, serviceInitMock, spawnMock } = vi.hoisted(
-  () => ({
+const { scanMock, serviceBuildContextPackMock, serviceCloseMock, serviceInitMock, spawnMock } =
+  vi.hoisted(() => ({
     spawnMock: vi.fn(),
+    scanMock: vi.fn(),
     serviceInitMock: vi.fn(),
     serviceBuildContextPackMock: vi.fn(),
     serviceCloseMock: vi.fn(),
-  }),
-);
+  }));
 
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
@@ -36,6 +37,10 @@ vi.mock('../../src/search/SearchService.js', () => ({
   }),
 }));
 
+vi.mock('../../src/scanner/index.js', () => ({
+  scan: scanMock,
+}));
+
 const tempDirs: string[] = [];
 let previousHome: string | undefined;
 let previousArgv1: string | undefined;
@@ -48,14 +53,30 @@ async function createTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-async function createIndexedRepo(): Promise<{ repoPath: string; projectId: string }> {
+async function createIndexedRepo(options?: {
+  confirmed?: boolean;
+  createDatabase?: boolean;
+}): Promise<{ repoPath: string; projectId: string }> {
   const repoPath = await createTempDir('cw-retrieval-repo-');
-  const projectId = getProjectIdentity(repoPath).projectId;
+  await fs.writeFile(
+    path.join(repoPath, 'cwconfig.json'),
+    JSON.stringify({ indexing: { includePatterns: ['src/**'] } }, null, 2),
+    'utf-8',
+  );
+  const identity = getProjectIdentity(repoPath);
+  const projectId = identity.projectId;
   const baseDir = path.join(os.homedir(), '.contextweaver');
   const projectDir = path.join(baseDir, projectId);
   await fs.mkdir(baseDir, { recursive: true, mode: 0o777 });
-  await fs.mkdir(projectDir, { recursive: true });
-  await fs.writeFile(path.join(projectDir, 'index.db'), '', 'utf-8');
+  if (options?.createDatabase !== false) {
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(path.join(projectDir, 'index.db'), '', 'utf-8');
+  }
+  await upsertIndexedProject({
+    ...identity,
+    lastIndexedAt: new Date().toISOString(),
+    confirmedAt: options?.confirmed === false ? null : new Date().toISOString(),
+  });
   return { repoPath, projectId };
 }
 
@@ -94,6 +115,16 @@ beforeEach(async () => {
   vi.resetModules();
   spawnMock.mockReturnValue({ pid: 1234, unref: vi.fn() });
   serviceInitMock.mockResolvedValue(undefined);
+  scanMock.mockResolvedValue({
+    totalFiles: 1,
+    added: 1,
+    modified: 0,
+    unchanged: 0,
+    deleted: 0,
+    skipped: 0,
+    errors: 0,
+    vectorIndex: { indexedFiles: 1, totalChunks: 1 },
+  });
   serviceBuildContextPackMock.mockResolvedValue(createPack());
   serviceCloseMock.mockReturnValue(undefined);
 });
@@ -228,6 +259,76 @@ describe('renderSearchResult', () => {
 });
 
 describe('retrieveCodeContext', () => {
+  it('fails closed when an index database exists without confirmed indexing', async () => {
+    const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
+    const { repoPath } = await createIndexedRepo({ confirmed: false });
+
+    await expect(
+      retrieveCodeContext({
+        repoPath,
+        informationRequest: 'must not use an unconfirmed index',
+      }),
+    ).rejects.toThrow('当前仓库尚未完成确认式索引');
+
+    expect(scanMock).not.toHaveBeenCalled();
+    expect(serviceInitMock).not.toHaveBeenCalled();
+    expect(serviceBuildContextPackMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('self-heals a confirmed project whose index database is missing', async () => {
+    const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
+    const { repoPath } = await createIndexedRepo({ createDatabase: false });
+    const onProgress = vi.fn();
+
+    const result = await retrieveCodeContext(
+      {
+        repoPath,
+        informationRequest: 'rebuild the missing index',
+      },
+      { onProgress },
+    );
+
+    expect(result.summary.seedCount).toBe(1);
+    expect(scanMock).toHaveBeenCalledTimes(1);
+    expect(scanMock).toHaveBeenCalledWith(
+      repoPath,
+      expect.objectContaining({ vectorIndex: true, onProgress }),
+    );
+    expect(onProgress).toHaveBeenCalledWith(0, 100, '代码库未索引，开始首次索引...');
+    expect(serviceInitMock).toHaveBeenCalledTimes(1);
+    expect(serviceBuildContextPackMock).toHaveBeenCalledTimes(1);
+    expect(serviceCloseMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels self-healing indexing when the retrieval request is aborted', async () => {
+    const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
+    const { repoPath } = await createIndexedRepo({ createDatabase: false });
+    const controller = new AbortController();
+    scanMock.mockImplementationOnce((_rootPath, options) => {
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+          once: true,
+        });
+      });
+    });
+
+    const retrieval = retrieveCodeContext(
+      { repoPath, informationRequest: 'cancel self-healing index' },
+      { signal: controller.signal },
+    );
+    await vi.waitFor(() => expect(scanMock).toHaveBeenCalledTimes(1));
+    controller.abort(new Error('client cancelled'));
+
+    await expect(retrieval).rejects.toThrow('client cancelled');
+    expect(scanMock).toHaveBeenCalledWith(
+      repoPath,
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(serviceInitMock).not.toHaveBeenCalled();
+  });
+
   it('queries an existing index immediately and schedules background indexing once', async () => {
     const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
     const { repoPath, projectId } = await createIndexedRepo();
@@ -241,7 +342,7 @@ describe('retrieveCodeContext', () => {
     expect(serviceInitMock).toHaveBeenCalledTimes(1);
     expect(serviceBuildContextPackMock).toHaveBeenCalledTimes(1);
     expect(serviceCloseMock).toHaveBeenCalledTimes(1);
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
     expect(spawnMock.mock.calls[0]?.[0]).toBe(process.execPath);
     await expect(existingBundledCliEntryPaths()).resolves.toContain(
       spawnMock.mock.calls[0]?.[1]?.[0],
@@ -268,6 +369,56 @@ describe('retrieveCodeContext', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(serviceCloseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not schedule background indexing when the caller just completed an index', async () => {
+    const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
+    const { repoPath } = await createIndexedRepo();
+
+    await retrieveCodeContext(
+      {
+        repoPath,
+        informationRequest: 'query the freshly created index',
+      },
+      { skipBackgroundIndex: true },
+    );
+
+    expect(serviceBuildContextPackMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('applies the foreground index cooldown to other retrieval requests', async () => {
+    const { markBackgroundIndexFresh, retrieveCodeContext } = await import(
+      '../../src/retrieval/index.js'
+    );
+    const { repoPath } = await createIndexedRepo();
+    markBackgroundIndexFresh(repoPath);
+
+    await retrieveCodeContext({
+      repoPath,
+      informationRequest: 'reuse the fresh foreground index',
+    });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the request cancellation signal into search', async () => {
+    const { retrieveCodeContext } = await import('../../src/retrieval/index.js');
+    const { repoPath } = await createIndexedRepo();
+    const controller = new AbortController();
+
+    await retrieveCodeContext(
+      {
+        repoPath,
+        informationRequest: 'cancel-aware search',
+      },
+      { signal: controller.signal },
+    );
+
+    expect(serviceBuildContextPackMock).toHaveBeenCalledWith(
+      'cancel-aware search',
+      controller.signal,
+    );
   });
 
   it('closes SearchService when retrieval fails', async () => {

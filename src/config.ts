@@ -22,7 +22,7 @@ const isDev = process.env.NODE_ENV === 'dev';
 const userConfigDir = path.join(os.homedir(), '.contextweaver');
 const userEnvPath = path.join(userConfigDir, '.env');
 
-// 兼容 logger 的非交互模式检测；当前已不再暴露 MCP 命令。
+// 兼容 logger 的非交互模式检测；MCP stdio 模式必须保持 stdout 为纯协议流。
 export const isMcpMode = process.argv.includes('mcp');
 
 function loadEnv(): void {

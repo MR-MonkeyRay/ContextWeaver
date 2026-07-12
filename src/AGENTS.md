@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-ContextWeaver 全部业务逻辑，管道式分层架构：CLI 层 → 服务层 → 领域层 → 基础设施层。
+ContextWeaver 全部业务逻辑，管道式分层架构：CLI / MCP 适配层 → retrieval / promptContext 应用层 → 搜索与索引领域层 → 基础设施层。
 
 ## STRUCTURE
 
@@ -12,6 +12,12 @@ ContextWeaver 全部业务逻辑，管道式分层架构：CLI 层 → 服务层
 ├── config.ts           全局配置：.env 加载、Embedding/Reranker API 配置
 ├── projectConfig.ts    项目级 cwconfig.json 的读取与验证（zod）
 ├── indexRegistry.ts    ~/.contextweaver/indexes.json 读写
+├── mcp/                stdio MCP 协议适配
+│   ├── server.ts       服务器创建、两个工具注册、请求能力上下文
+│   ├── authorization.ts 首次索引 Elicitation、CLI 回退与进度转发
+│   ├── pathPolicy.ts   绝对路径规范化与 Roots 闭锁校验
+│   ├── result.ts       结构化业务结果与错误脱敏
+│   └── tools/          codebase-retrieval / prepare-prompt-context handlers
 ├── api/                外部 API 适配
 │   ├── embedding.ts    EmbeddingClient — 速率限制、自适应并发、错误分类
 │   └── reranker.ts     RerankerClient
@@ -57,6 +63,7 @@ ContextWeaver 全部业务逻辑，管道式分层架构：CLI 层 → 服务层
 | Indexer         | `Indexer` 类                       | 分片到向量写入的编排                     |
 | Retrieval       | `retrieveCodeContext()`            | 确保索引就绪后执行搜索并渲染结果         |
 | PromptContext   | `buildPromptContext()`             | 意图检测→术语提取→检索→渲染增强上下文    |
+| MCP             | `createContextWeaverMcpServer()`    | stdio 工具注册、Roots 校验与首次索引授权 |
 | EmbeddingClient | `EmbeddingClient` 类               | API 调用 + 速率限制 + 会话级致命错误广播 |
 | VectorStore     | `VectorStore` 类                   | LanceDB chunk 表 CRUD                    |
 | DB              | `initDb()`, `batchUpsert()`        | SQLite 全部操作                          |
@@ -73,6 +80,7 @@ ContextWeaver 全部业务逻辑，管道式分层架构：CLI 层 → 服务层
 | 修改数据库操作      | `db/index.ts`                                                           |
 | 添加新语言支持      | `chunking/LanguageSpec.ts` + `search/resolvers/<Lang>Resolver.ts`       |
 | 修改 Embedding 行为 | `api/embedding.ts`                                                      |
+| 修改 MCP 行为       | `mcp/server.ts` → `authorization.ts` / `pathPolicy.ts` → `mcp/tools/` |
 
 ## CONVENTIONS
 
@@ -80,3 +88,5 @@ ContextWeaver 全部业务逻辑，管道式分层架构：CLI 层 → 服务层
 - 工厂函数模式：`getXxx()` 返回惰性单例，实例池用 `Map<string, Xxx>` 管理
 - 测试注入：关键函数接受可选的函数参数（`scanFn?`, `retrieve?`），测试时替换
 - 错误包装：扫描阶段错误用 `ScanStageError` 标记阶段，嵌入错误用 `EmbeddingFatalError` 携带诊断信息
+- MCP 复用 `runIndexCommand()`、`retrieveCodeContext()` 与 `buildPromptContext()`，不要在 handler 中复制索引或检索生命周期
+- stdio 模式不得向 stdout 写日志；首次索引只接受 Elicitation 的 `accept + approve=true`，无能力时返回 CLI 回退

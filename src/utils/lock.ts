@@ -7,10 +7,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { logger } from './logger.js';
 import { ensurePrivateDirSync, writePrivateFileSync } from './privateStorage.js';
 
-const BASE_DIR = path.join(os.homedir(), '.contextweaver');
+function getBaseDir(): string {
+  return path.join(os.homedir(), '.contextweaver');
+}
 const LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 锁最大持有时长
 const LOCK_CHECK_INTERVAL_MS = 100; // 检查间隔
 const LOCK_HEARTBEAT_INTERVAL_MS = 5 * 1000; // 心跳刷新间隔
@@ -26,7 +29,7 @@ interface LockInfo {
  * 获取锁文件路径
  */
 function getLockFilePath(projectId: string): string {
-  return path.join(BASE_DIR, projectId, 'index.lock');
+  return path.join(getBaseDir(), projectId, 'index.lock');
 }
 
 /**
@@ -208,18 +211,21 @@ async function acquireLock(
   projectId: string,
   operation: string,
   timeoutMs: number = 30000,
+  signal?: AbortSignal,
 ): Promise<{ token: string } | null> {
   const lockPath = getLockFilePath(projectId);
   const dir = path.dirname(lockPath);
 
   // 确保目录存在
-  ensurePrivateDirSync(BASE_DIR);
+  const baseDir = getBaseDir();
+  ensurePrivateDirSync(baseDir);
   ensurePrivateDirSync(dir);
 
   const startTime = Date.now();
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
   while (Date.now() - startTime < timeoutMs) {
+    signal?.throwIfAborted();
     const existingLockInfo = readLockInfo(lockPath);
 
     if (!existingLockInfo) {
@@ -245,7 +251,11 @@ async function acquireLock(
     }
 
     // 等待后重试
-    await new Promise((resolve) => setTimeout(resolve, LOCK_CHECK_INTERVAL_MS));
+    if (signal) {
+      await delay(LOCK_CHECK_INTERVAL_MS, undefined, { signal });
+    } else {
+      await delay(LOCK_CHECK_INTERVAL_MS);
+    }
   }
 
   logger.warn({ projectId: projectId.slice(0, 10), timeoutMs }, '获取锁超时');
@@ -305,8 +315,9 @@ export async function withLock<T>(
   operation: string,
   fn: () => Promise<T>,
   timeoutMs: number = 30000,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const lockHandle = await acquireLock(projectId, operation, timeoutMs);
+  const lockHandle = await acquireLock(projectId, operation, timeoutMs, signal);
 
   if (!lockHandle) {
     throw new Error(`无法获取项目锁 (${projectId.slice(0, 10)})，其他进程正在操作索引`);

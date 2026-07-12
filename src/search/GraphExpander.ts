@@ -92,9 +92,15 @@ export class GraphExpander {
   /**
    * 扩展 seed chunks
    */
-  async expand(seeds: ScoredChunk[], queryTokens?: Set<string>): Promise<ExpandResult> {
+  async expand(
+    seeds: ScoredChunk[],
+    queryTokens?: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<ExpandResult> {
+    signal?.throwIfAborted();
     if (!this.vectorStore || !this.db) {
       await this.init();
+      signal?.throwIfAborted();
     }
 
     // 确保文件索引已加载 (供 E3 使用)
@@ -119,17 +125,20 @@ export class GraphExpander {
     const seedsByFile = this.groupByFile(seeds);
 
     // E1: 同文件邻居扩展
-    const neighborChunks = await this.expandNeighbors(seedsByFile, existingKeys);
+    const neighborChunks = await this.expandNeighbors(seedsByFile, existingKeys, signal);
+    signal?.throwIfAborted();
     this.addChunks(neighborChunks, expandedChunks, existingKeys);
     stats.neighborCount = neighborChunks.length;
 
     // E2: breadcrumb 补段
-    const breadcrumbChunks = await this.expandBreadcrumb(seeds, existingKeys);
+    const breadcrumbChunks = await this.expandBreadcrumb(seeds, existingKeys, signal);
+    signal?.throwIfAborted();
     this.addChunks(breadcrumbChunks, expandedChunks, existingKeys);
     stats.breadcrumbCount = breadcrumbChunks.length;
 
     // E3: 跨文件引用解析（多语言支持）
-    const importChunks = await this.expandImports(seeds, existingKeys, queryTokens, stats);
+    const importChunks = await this.expandImports(seeds, existingKeys, queryTokens, stats, signal);
+    signal?.throwIfAborted();
     this.addChunks(importChunks, expandedChunks, existingKeys);
     stats.importCount = importChunks.length;
 
@@ -163,6 +172,7 @@ export class GraphExpander {
   private async expandNeighbors(
     seedsByFile: Map<string, ScoredChunk[]>,
     existingKeys: Set<string>,
+    signal?: AbortSignal,
   ): Promise<ScoredChunk[]> {
     const result: ScoredChunk[] = [];
     const { neighborHops, decayNeighbor } = this.config;
@@ -170,6 +180,7 @@ export class GraphExpander {
     // 性能优化：批量获取所有文件的 chunks（N 次查询 → 1 次）
     const allFilePaths = Array.from(seedsByFile.keys());
     const allChunksMap = await this.vectorStore?.getFilesChunks(allFilePaths);
+    signal?.throwIfAborted();
     if (!allChunksMap) return result;
 
     for (const [filePath, fileSeeds] of seedsByFile) {
@@ -247,6 +258,7 @@ export class GraphExpander {
   private async expandBreadcrumb(
     seeds: ScoredChunk[],
     existingKeys: Set<string>,
+    signal?: AbortSignal,
   ): Promise<ScoredChunk[]> {
     const result: ScoredChunk[] = [];
     const { breadcrumbExpandLimit, decayBreadcrumb } = this.config;
@@ -270,6 +282,7 @@ export class GraphExpander {
       uniqueFilePaths.add(prefixSeeds[0].filePath);
     }
     const allChunksMap = await this.vectorStore?.getFilesChunks(Array.from(uniqueFilePaths));
+    signal?.throwIfAborted();
     if (!allChunksMap) return result;
 
     // 对于每个前缀，查找同前缀的其他 chunks
@@ -335,6 +348,7 @@ export class GraphExpander {
     existingKeys: Set<string>,
     queryTokens?: Set<string>,
     stats?: ExpandResult['stats'],
+    signal?: AbortSignal,
   ): Promise<ScoredChunk[]> {
     const result: ScoredChunk[] = [];
     const { importFilesPerSeed, chunksPerImportFile, decayImport, decayDepth } = this.config;
@@ -347,6 +361,7 @@ export class GraphExpander {
     }
 
     while (queue.length > 0) {
+      signal?.throwIfAborted();
       const item = queue.shift();
       if (!item) break;
       const { filePath, depth, seedScore } = item;
@@ -377,6 +392,7 @@ export class GraphExpander {
       const processedImports = new Set<string>();
 
       for (const importStr of importStrs) {
+        signal?.throwIfAborted();
         if (importCount >= perFileLimit) break;
         if (processedImports.has(importStr)) continue;
         processedImports.add(importStr);
@@ -388,6 +404,7 @@ export class GraphExpander {
         if (!targetPath || targetPath === filePath) continue; // 排除引用自己
 
         const importChunks = await this.vectorStore?.getFileChunks(targetPath);
+        signal?.throwIfAborted();
         if (!importChunks || importChunks.length === 0) continue;
 
         const selectedChunks = this.selectImportChunks(

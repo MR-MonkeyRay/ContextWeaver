@@ -12,13 +12,21 @@ description: >-
 
 ## 定位
 
-ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 负责建立确认式索引并输出检索证据；这个 Skill 负责指导 agent 在合适时机调用 `contextweaver search` 的配套脚本，读取证据后再转向精确文件阅读或修改。
+ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 与 stdio MCP 复用同一套确认式索引、检索和 Prompt Context 应用层；这个 Skill 负责选择当前 agent 可用的接入面，读取证据后再转向精确文件阅读或修改。
 
 优先使用它来回答"怎么实现"、"逻辑在哪里"、"哪些文件相关"、"改动前影响面是什么"。不要把它当成全文枚举工具；需要统计全部出现位置、逐个替换、或已经知道文件和行号时，直接用 `rg`/read。
 
+
+## 接入选择
+
+1. 当前工具列表存在 `codebase-retrieval` 时优先使用 MCP；它避免为每次查询启动 agent shell 命令，并把首次索引授权、Roots 校验与结构化结果放在同一协议链路中。
+2. 需要为模糊请求准备证据且存在 `prepare-prompt-context` 时使用该工具；传入 `repo_path` 才会检索仓库，不传时只做本地 Prompt 分析。
+3. MCP 工具不可用时，再调用本 Skill 的 `search-context.mjs`。不要为一次查询手动运行 `contextweaver mcp`；stdio 服务器应由 MCP 客户端注册并管理。
+
+
 ## 前置条件
 
-先确认目标仓库已经可搜索。`search-context.mjs` 只包装 `contextweaver search`，不会在用户不知情时自动索引或发送代码。若检索报告项目尚未确认索引，Agent 必须主动执行初始化恢复；不要仅把初始化命令转述给用户。
+先确认目标仓库已经可搜索。CLI 脚本不会自动首次索引；遇到未确认仓库时，Agent 必须主动执行初始化恢复。MCP 也只会在兼容客户端通过 Form Elicitation 返回 `accept` 且 `approve=true` 后索引；没有 Elicitation 能力时返回结构化 CLI 回退命令，不扫描仓库。
 
 - 全局配置：运行过 `contextweaver init` 或已有 `~/.contextweaver/.env`。
 - 必要环境变量：`EMBEDDINGS_API_KEY`、`EMBEDDINGS_BASE_URL`、`EMBEDDINGS_MODEL`、`RERANK_API_KEY`、`RERANK_BASE_URL`、`RERANK_MODEL`。缺失时检索会创建示例 `.env` 后报错，不能继续声称已完成语义检索。
@@ -30,6 +38,9 @@ ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 
 | 现象 | 处理 |
 | --- | --- |
 | `当前仓库尚未完成确认式索引，请先运行 cw index` | Agent 立即进入下方“初始化恢复”流程；完成后自动重试原检索。 |
+| MCP `status: authorization_required` | 未发生扫描；优先以 `authorization.cliExecutable` + `authorization.cliArgs` 启动进程；POSIX 可信终端也可执行展示用 `authorization.cliCommand`，确认预览后重试原工具。 |
+| MCP `status: declined` | 用户拒绝、取消或授权响应无效；停止索引，不要改用 `--yes` 绕过。 |
+| MCP Roots / `repo_path` 校验失败 | 使用真实存在的仓库绝对路径，并保持在客户端声明的 `file://` Roots 内；不要扩大到 HOME 或文件系统根。 |
 | `ContextWeaver 环境变量未配置` | 编辑 `~/.contextweaver/.env` 或设置对应环境变量后重试。 |
 | 脚本退出 1，且无法找到/启动 `contextweaver` | 安装 CLI，或设置 `CONTEXTWEAVER_BIN=/abs/path/to/contextweaver`。 |
 | 输出 JSON 前有日志行 | 忽略日志行，从第一个 `{` 开始解析 JSON；人工排查可改用 `--format text`。 |
@@ -70,7 +81,28 @@ ContextWeaver 是给 AI coding agent 用的本地代码库上下文引擎。CLI 
 
 ## 调用方式
 
-优先调用本 Skill 自带脚本，并把脚本路径按当前 `SKILL.md` 所在目录解析；不要假设目标仓库根目录一定有 `skills/using-contextweaver`。
+### MCP 工具（优先）
+
+`codebase-retrieval` 的核心输入：
+
+```json
+{
+  "repo_path": "/absolute/path/to/repo",
+  "information_request": "当前 CLI 搜索命令如何检查索引前置条件？",
+  "technical_terms": ["ensureSearchableProject", "SearchService"]
+}
+```
+
+`prepare-prompt-context` 接收 `prompt`，以及可选的 `repo_path`、`paths`、`symbols`。两种工具都把同一业务 JSON 同时放入 TextContent 与 `structuredContent`：
+
+- `status: ok`：读取 `result`。
+- `status: authorization_required`：读取 `authorization.message`、`authorization.cliExecutable` 与 `authorization.cliArgs`；`authorization.cliCommand` 仅为 POSIX 展示字符串，没有发生首次扫描。
+- `status: declined`：授权未接受；停止，不要自动重试或绕过。
+- `isError: true`：协议、路径、配置或执行失败；错误文本已经脱敏，但仍需按错误内容修复或降级。
+
+### CLI / Skill 脚本回退
+
+调用本 Skill 自带脚本，并把脚本路径按当前 `SKILL.md` 所在目录解析；不要假设目标仓库根目录一定有 `skills/using-contextweaver`。
 
 ```bash
 node /abs/path/to/using-contextweaver/scripts/search-context.mjs \
@@ -121,12 +153,15 @@ JSON 结果的主要字段：
 
 ## 初始化恢复
 
-当检索失败且提示项目尚未确认索引时，Agent 必须主动执行初始化恢复：
+当检索提示项目尚未确认索引时，按当前接入面恢复：
+
+- MCP：先让原工具完成 Elicitation。只有 `accept + approve=true` 才会在同一调用内索引并继续原请求；`authorization_required` 时优先按返回的 executable + args 启动 CLI，POSIX 终端可使用展示命令；`declined` 时停止。
+- CLI / Skill 脚本：进入以下初始化流程：
 
 1. 检查全局 API 配置。缺失凭据时，`contextweaver init` 只能创建示例文件，不能生成真实密钥；此时说明凭据阻塞并降级到 `rg`/read。
 2. 运行 `contextweaver index /abs/path/to/repo`。项目配置缺失时，该命令会创建推荐的 `cwconfig.json`，随后继续展示实际文件范围并请求确认。
 3. 交互环境读取预览后确认；非交互环境先读取新生成的 `cwconfig.json` 并核对范围，只有范围已获当前任务授权时才使用 `--yes`。
-4. 索引成功后，自动重试原始 `search-context.mjs` 调用一次，不要要求用户重新发起任务。
+4. 索引成功后，自动重试原始检索调用一次，不要要求用户重新发起任务。
 
 非交互执行时：
 
@@ -142,14 +177,16 @@ contextweaver index /abs/path/to/repo --yes
 - 要找所有出现位置、统计次数、批量替换：用 `rg`。
 - 没有可用 API 凭据、不能索引、或索引范围未经确认：说明无法使用 ContextWeaver，改用 `rg`/read，不要伪造语义检索结论。
 - 需要把模糊需求整理成可执行任务 prompt：使用 `enhancing-prompts`；本 Skill 只负责代码语义检索。
+- agent shell 报 `bwrap ... RTM_NEWADDR` 时，若 MCP 工具可用可改走 MCP；它可能避开逐命令 shell 沙箱，但不保证 MCP 子进程或外部网络未被宿主限制。仍失败则降级到 `rg`/read。
 
 ## 快速判断
 
 ```text
 不确定要看哪些文件？ -> ContextWeaver
-不确定改动影响范围？ -> ContextWeaver
-想知道"怎么实现的"？ -> ContextWeaver
+MCP 工具可见？ -> codebase-retrieval / prepare-prompt-context
+MCP 不可用？ -> Skill 脚本 -> CLI
+新项目未索引？ -> MCP Elicitation；不支持则 authorization.cliExecutable + cliArgs
 100% 知道文件+行号？ -> read
 要统计/穷举/全替换？ -> rg
-新项目未索引？ -> index（自动建配置并预览）-> 确认 -> 重试 search
+授权、凭据或网络阻塞？ -> 明确说明 -> rg/read 降级
 ```

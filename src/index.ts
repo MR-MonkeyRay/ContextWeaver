@@ -403,6 +403,20 @@ cli
     }
   });
 
+cli.command('mcp', '启动 MCP 服务器').action(async () => {
+  try {
+    const { startMcpServer } = await import('./mcp/server.js');
+    await startMcpServer();
+  } catch (err) {
+    const error = err as { message?: string; stack?: string };
+    logger.error(
+      { error: error.message, stack: error.stack },
+      `MCP 服务器启动失败: ${error.message ?? '未知错误'}`,
+    );
+    process.exit(1);
+  }
+});
+
 cli
   .command('search', '本地检索（参数对齐 MCP）')
   .option('--repo-path <path>', '代码库根目录（默认当前目录）')

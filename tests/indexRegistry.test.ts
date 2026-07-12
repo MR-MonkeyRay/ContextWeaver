@@ -70,6 +70,29 @@ describe('indexRegistry', () => {
     ]);
   });
 
+  it('preserves both records when different repositories are upserted concurrently', async () => {
+    const firstRepo = await createTempDir('cw-repo-a-');
+    const secondRepo = await createTempDir('cw-repo-b-');
+
+    await Promise.all([
+      upsertIndexedProject({
+        projectId: 'project-a1',
+        projectPath: firstRepo,
+        pathBirthtimeMs: 1,
+        lastIndexedAt: '2026-03-27T00:00:00.000Z',
+      }),
+      upsertIndexedProject({
+        projectId: 'project-b2',
+        projectPath: secondRepo,
+        pathBirthtimeMs: 2,
+        lastIndexedAt: '2026-03-27T00:00:00.000Z',
+      }),
+    ]);
+
+    const projectIds = (await listIndexedProjects()).map((item) => item.projectId).sort();
+    expect(projectIds).toEqual(['project-a1', 'project-b2']);
+  });
+
   it('stores the registry under a private directory and file mode', async () => {
     const previousUmask = process.umask(0o002);
     try {

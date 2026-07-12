@@ -30,6 +30,9 @@ export interface BuildPromptContextOptions {
   explicitPaths?: string[];
   explicitSymbols?: string[];
   retrieve?: (input: RetrievalInput) => Promise<SearchResult>;
+  onProgress?: (current: number, total?: number, message?: string) => void;
+  signal?: AbortSignal;
+  skipBackgroundIndex?: boolean;
 }
 
 export type PromptContextOutputFormat = 'json' | 'text';
@@ -70,7 +73,10 @@ export async function buildPromptContext(
       ((input: RetrievalInput) =>
         ensureSearchableProject(input.repoPath).then(() =>
           retrieveCodeContext(input, {
+            onProgress: options.onProgress,
             configOverride: PROMPT_CONTEXT_CONFIG_OVERRIDE,
+            signal: options.signal,
+            skipBackgroundIndex: options.skipBackgroundIndex,
           }),
         ));
     const result = await retrieve({

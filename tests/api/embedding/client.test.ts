@@ -152,6 +152,24 @@ describe('EmbeddingClient orchestration', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('aborts an in-flight query embedding when the caller cancels', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    global.fetch = fetchMock;
+    const client = createClient();
+    const request = client.embed('cancel me', controller.signal);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort(new Error('client cancelled'));
+
+    await expect(request).rejects.toThrow('client cancelled');
+    expect(client.getRateLimiterStatus().activeRequests).toBe(0);
+  });
+
   it('uses config.batchSize when embedBatch is called without an explicit batchSize', async () => {
     const client = createClient({ batchSize: 2 });
     const processBatchSpy = vi

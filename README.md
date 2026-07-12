@@ -13,7 +13,7 @@
 
 ---
 
-**ContextWeaver** 是一个上下文引擎，由 **CLI + Skill** 组成：CLI 提供稳定的本地检索与证据准备命令，Skill 指导运行中的 agent 如何消费这些结果、如何在必要时向用户提问、以及如何把模糊请求收敛成可执行任务。
+**ContextWeaver** 是一个由 **CLI + Skill + MCP** 组成的代码库上下文引擎：CLI 提供稳定的本地索引、检索与证据准备命令，Skill 指导 agent 何时及如何消费证据，MCP 则通过 stdio 向兼容客户端暴露同一套检索能力。
 
 <p align="center">
   <img src="assets/architecture.png" alt="Overview" width="800" />
@@ -25,6 +25,7 @@
 - **三阶段上下文扩展**：邻居扩展、Breadcrumb 补全、Import 追踪
 - **明确的索引范围**：首次索引必须先预览范围并显式确认
 - **Skill**：内置可分发的 `using-contextweaver` 与 `enhancing-prompts` 技能资产
+- **MCP stdio 适配器**：向兼容客户端提供代码检索与 Prompt Context 工具，并在首次索引前通过 Elicitation 请求授权
 - **Prompt Context 准备 (Prompt Enhancement)**：把模糊请求转换为基于仓库事实的证据包，供 agent 自行增强任务说明
 
 ## 安装
@@ -114,6 +115,9 @@ contextweaver search [--format json] --information-request "提示词增强相�
 # 为模糊请求准备 repo-aware 证据（默认文本输出）
 contextweaver prompt-context [--format json] "把 prompt enhance 对齐到 Skills"
 
+# 启动 stdio MCP 服务器
+contextweaver mcp
+
 # 安装内置 Skill 到指定目录（--dir 必填）
 contextweaver install-skills --dir ./agent-skills
 
@@ -123,6 +127,60 @@ contextweaver clean
 
 > CLI 默认输出优先给人看：`search` 与 `prompt-context` 默认都是 `text`；在 Skill 脚本中显式用 `--format json`.
 > `search` 与 `prompt-context` 都要求当前仓库已经成功完成过一次索引 `contextweaver index`。
+
+## MCP 集成
+
+MCP 是当前 `retrieval` 与 `promptContext` 应用层的 stdio 适配器，不维护另一套索引或搜索逻辑。可在支持 MCP 的客户端中注册：
+
+```json
+{
+  "mcpServers": {
+    "contextweaver": {
+      "command": "contextweaver",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+也可以把 `command` 改为 `cw`。不同客户端的配置位置和首次启用授权方式不同，请遵循对应客户端文档。服务器当前只暴露两个工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `codebase-retrieval` | 按自然语言问题和可选技术术语检索仓库代码上下文 |
+| `prepare-prompt-context` | 为模糊请求准备证据包；仅在传入 `repo_path` 时检索仓库 |
+
+两条工具的仓库型调用共享同一首次索引授权流程：
+
+```text
+工具调用 → 校验仓库路径与 MCP Roots → 检查确认式索引
+  ├─ 已确认：执行检索 / Prompt Context 准备
+  └─ 未确认：先检查客户端 Elicitation 能力
+       ├─ 支持 Form Elicitation：在本地生成并展示范围预览后请求授权
+       │    ├─ accept 且 approve=true：索引完成后继续原工具调用
+       │    └─ decline / cancel：不索引、不调用外部模型
+       └─ 客户端不支持 Elicitation：返回 authorization_required
+            并提供 cliExecutable + cliArgs；cliCommand 仅为 POSIX 展示命令
+```
+
+授权与运行边界：
+
+- 授权来自当前 MCP 会话中的 Elicitation 响应；`cwconfig.json` 只定义索引范围，不能替用户授权。该响应是对合规客户端行为的信任，不是“物理用户已点击”的密码学证明。
+- 首次授权成功后，`confirmedAt` 作为该仓库路径的持久授权跨 MCP 会话生效，后续调用不会逐次 Elicitation。它尚未绑定 `cwconfig.json` 内容或模型服务配置；后续范围或供应商变化不会自动再次触发授权，变更后应人工复核并重新索引。
+- 客户端声明 Roots 时，仓库必须位于可用的 `file://` Root 内；Roots 查询失败、为空或没有可用文件 Root 时会闭锁拒绝。客户端未声明 Roots 时，只接受真实存在的绝对目录，并拒绝文件系统根目录和用户 HOME；这是兼容性降级，不等同于会话级文件系统沙箱，需要严格会话边界的客户端应声明 Roots。
+- 首次预览阶段不调用外部模型；用户授权并开始索引后，匹配的代码片段会发送到配置的 Embedding 服务。检索还会把查询及候选片段发送到配置的 Embedding/Reranker 服务。请在授权前核对 `cwconfig.json`、服务地址、数据策略与费用边界。
+- 如果调用携带 MCP progress token，长时间索引会发送尽力而为、严格递增的进度通知；通知失败不会中断索引。当前不提供 MCP Tasks，进度通知也不保证重置客户端或宿主的请求超时。
+- stdio MCP 由客户端作为子进程启动，可能避免每次通过 agent shell 执行命令时遇到的 `bwrap` 网络命名空间问题；但 MCP 协议不能保证客户端不会再次沙箱化服务器，也不能保证外部 API 网络可达。
+
+如果客户端不支持 Elicitation，请在可信终端中检查 CLI 展示的预览并完成：
+
+程序化回退应直接以 `authorization.cliExecutable` 和 `authorization.cliArgs` 启动进程；`authorization.cliCommand` 只是 POSIX shell 展示字符串。
+
+```bash
+cw index '/absolute/path/to/repository'
+```
+
+随后重试原 MCP 工具调用。不要让 agent 把 `--yes` 当作对未知索引范围或外部传输的隐式授权。
 
 ## Skill 资产
 
@@ -141,9 +199,9 @@ contextweaver clean
 ## 架构
 
 ```text
-      索引: Crawler → Processor → SemanticSplitter → Indexer → VectorStore / SQLite
-      搜索: Query → Vector + FTS Recall → RRF Fusion → Rerank → GraphExpander → ContextPacker
-Skill 链路: CLI 结构化 JSON 输出 → Skill 脚本 → Agent 解释/提问/任务收敛
+     索引: Crawler → Processor → SemanticSplitter → Indexer → VectorStore / SQLite
+     搜索: Query → Vector + FTS Recall → RRF Fusion → Rerank → GraphExpander → ContextPacker
+适配边界: CLI / Skill / MCP → retrieval + promptContext → 共享搜索与索引基础设施
 ```
 
 关键模块：
@@ -155,6 +213,7 @@ Skill 链路: CLI 结构化 JSON 输出 → Skill 脚本 → Agent 解释/提问
 | `ContextPacker` | `src/search/ContextPacker.ts` | 段落合并与预算控制          |
 | `retrieval`     | `src/retrieval/index.ts`      | 结构化检索输出与 CLI 渲染   |
 | `promptContext` | `src/promptContext/index.ts`  | Prompt 证据准备与技术词提取 |
+| `mcp`           | `src/mcp/`                    | stdio 协议、Roots 校验与首次索引授权 |
 
 ### 超长 Chunk 自动拆分
 

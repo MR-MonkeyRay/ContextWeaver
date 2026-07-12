@@ -52,4 +52,5 @@ export interface RerankOptions {
   maxChunksPerDoc?: number;
   chunkOverlap?: number;
   retries?: number;
+  signal?: AbortSignal;
 }

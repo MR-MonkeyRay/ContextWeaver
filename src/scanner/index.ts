@@ -89,6 +89,8 @@ export interface ScanOptions {
   onProgress?: ProgressCallback;
   /** 预先计算好的待扫描文件绝对路径 */
   precomputedFilePaths?: string[];
+  /** 取消扫描、向量化和持久化后续工作 */
+  signal?: AbortSignal;
 }
 
 function reportStageProgress(
@@ -180,6 +182,7 @@ function asScanStageError(
  * 执行代码库扫描
  */
 export async function scan(rootPath: string, options: ScanOptions = {}): Promise<ScanStats> {
+  options.signal?.throwIfAborted();
   // 生成项目 ID
   const projectId = generateProjectId(rootPath);
 
@@ -189,6 +192,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
   try {
     // 初始化过滤器
     await initFilter(rootPath);
+    options.signal?.throwIfAborted();
 
     // 检查 embedding dimensions 是否变化
     let forceReindex = options.force ?? false;
@@ -217,6 +221,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         const embeddingConfig = getEmbeddingConfig();
         const indexer = await getIndexer(projectId, embeddingConfig.dimensions);
         await indexer.clear();
+        options.signal?.throwIfAborted();
       }
     }
 
@@ -227,7 +232,9 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     let filePaths: string[];
     try {
       filePaths = options.precomputedFilePaths ?? (await crawl(rootPath)).filePaths;
+      options.signal?.throwIfAborted();
     } catch (error) {
+      options.signal?.throwIfAborted();
       throw asScanStageError('crawl', error, buildScanStats(0, [], []));
     }
     reportStageProgress(options.onProgress, {
@@ -246,8 +253,10 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     const batchSize = 100;
     try {
       for (let i = 0; i < filePaths.length; i += batchSize) {
+        options.signal?.throwIfAborted();
         const batch = filePaths.slice(i, i + batchSize);
         const batchResults = await processFiles(rootPath, batch, knownFiles);
+        options.signal?.throwIfAborted();
         results.push(...batchResults);
         reportStageProgress(options.onProgress, {
           current: 10 + Math.floor((results.length / Math.max(filePaths.length, 1)) * 30),
@@ -257,6 +266,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         });
       }
     } catch (error) {
+      options.signal?.throwIfAborted();
       throw asScanStageError('process', error, buildScanStats(filePaths.length, results, []));
     }
 
@@ -315,6 +325,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     let stats = buildScanStats(filePaths.length, results, deletedPaths);
 
     try {
+      options.signal?.throwIfAborted();
       reportStageProgress(options.onProgress, {
         current: 75,
         total: 100,
@@ -325,6 +336,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
       batchUpdateMtime(db, toUpdateMtime);
       batchDelete(db, deletedPaths);
     } catch (error) {
+      options.signal?.throwIfAborted();
       throw asScanStageError('persist', error, stats);
     }
 
@@ -375,7 +387,9 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         try {
           // 重新处理这些文件（传入空的 knownFiles 强制重新读取和分片）
           processedHealingFiles = await processFiles(rootPath, healingFilePaths, new Map());
+          options.signal?.throwIfAborted();
         } catch (error) {
+          options.signal?.throwIfAborted();
           throw asScanStageError('process', error, stats);
         }
         const healingIndexableCount = processedHealingFiles.filter(
@@ -460,22 +474,29 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
           }
 
           // 传递进度回调给 indexer（embedding API 调用是真正的耗时操作）
-          const indexStats = await indexer.indexFiles(db, allToIndex, (completed, total) => {
-            // 将 embedding 批次进度映射到 45-99 区间（保留 100 给最终完成）
-            const progress = 45 + Math.floor((completed / total) * 54);
-            reportStageProgress(options.onProgress, {
-              current: progress,
-              total: 100,
-              stage: 'chunk/embed',
-              detail: `已完成 ${completed}/${total} 个批次`,
-            });
-          });
+          const indexStats = await indexer.indexFiles(
+            db,
+            allToIndex,
+            (completed, total) => {
+              options.signal?.throwIfAborted();
+              // 将 embedding 批次进度映射到 45-99 区间（保留 100 给最终完成）
+              const progress = 45 + Math.floor((completed / total) * 54);
+              reportStageProgress(options.onProgress, {
+                current: progress,
+                total: 100,
+                stage: 'chunk/embed',
+                detail: `已完成 ${completed}/${total} 个批次`,
+              });
+            },
+            options.signal,
+          );
           stats.vectorIndex = {
             indexed: indexStats.indexed,
             deleted: indexStats.deleted,
             errors: indexStats.errors,
           };
         } catch (err) {
+          options.signal?.throwIfAborted();
           const error = err as { message?: string };
           if ((error.message || '').includes('向量嵌入阶段失败')) {
             throw asScanStageError('chunk/embed', err, stats);

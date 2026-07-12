@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-面向 AI Coding Agent 的代码库上下文引擎。CLI 工具（`cw` / `contextweaver`），提供语义索引、混合检索（向量 + FTS5 + RRF + Rerank）、三阶段图扩展和 Prompt Context 准备。单包 TypeScript/ESM 项目，非 monorepo。
+面向 AI Coding Agent 的代码库上下文引擎。通过 CLI（`cw` / `contextweaver`）、可分发 Skill 与 stdio MCP 提供语义索引、混合检索、三阶段图扩展和 Prompt Context 准备。单包 TypeScript/ESM 项目，非 monorepo。
 
 ## STRUCTURE
 
@@ -19,6 +19,7 @@
 │   ├── chunking/           Tree-sitter 语义分片（详见 src/AGENTS.md）
 │   ├── db/                 SQLite 元数据 + FTS5 全文索引
 │   ├── indexer/            索引编排：分片 → embedding → 写入 LanceDB/SQLite
+│   ├── mcp/                stdio MCP 适配：工具、Elicitation 授权、Roots 路径策略
 │   ├── promptContext/      Prompt 增强上下文（意图检测 + 术语提取 + 检索）
 │   ├── retrieval/          检索入口：ensureIndex → search → render
 │   ├── scanner/            文件发现 + 变更检测 + 处理（详见 src/AGENTS.md）
@@ -54,6 +55,7 @@
 | 添加新 CLI 命令    | `src/index.ts`（定义）→ `src/cli.ts`（实现）                                  |
 | 修改索引流程       | `src/scanner/index.ts` → `src/indexer/index.ts`                               |
 | 修改搜索算法       | `src/search/SearchService.ts`（核心）                                         |
+| 修改 MCP 适配       | `src/mcp/server.ts` → `authorization.ts` / `pathPolicy.ts` → `tools/`       |
 | 添加新语言支持     | `src/chunking/LanguageSpec.ts`（分片）+ `src/search/resolvers/`（import解析） |
 | 修改 API 调用      | `src/api/embedding.ts` 或 `src/api/reranker.ts`                               |
 | 数据库 schema 变更 | `src/db/index.ts`                                                             |
@@ -69,6 +71,8 @@
 
 **检索管道：** `retrieval/` → `search/SearchService` (向量召回+FTS5→RRF融合→Rerank→SmartTopK→GraphExpander→ContextPacker)
 
+**MCP 适配链路：** `mcp/server.ts` → Roots 路径校验 → 首次索引授权 → `retrieval/` 或 `promptContext/`
+
 **基础设施层：** `config.ts`, `db/`, `vectorStore/`, `api/`, `utils/`
 
 ## CONVENTIONS
@@ -80,7 +84,7 @@
 - **Barrel 导出**：每个子目录有 `index.ts` 作为公共接口
 - **惰性单例工厂**：`getXxx()` 函数管理重量级实例（`getEmbeddingClient`, `getVectorStore(projectId)` 等）
 - **函数参数注入**：测试通过可选函数参数注入依赖，不用 DI 框架
-- **确认式索引**：首次索引需交互确认（`y/N`），非交互环境必须 `--yes`
+- **确认式索引**：CLI 首次索引用交互确认（非交互时显式 `--yes`）；MCP 首次索引只接受 Form Elicitation 中 `accept` 且 `approve=true`，不支持时回退 CLI
 - **项目 ID**：路径 SHA-256 前 10 位 hex，隔离不同项目的索引数据
 - **`config.ts` 最先导入**：`src/index.ts` 第一个 import 是 `'./config.js'`
 
@@ -92,6 +96,18 @@
 - 不要跳过 `config.ts` 的导入顺序（它负责 .env 加载）
 - 不要在 `fmt` 命令中包含 tests/（`pnpm fmt` 仅作用于 `./src`）
 - Skill 脚本中不要硬编码 `contextweaver` 路径，优先检查 `CONTEXTWEAVER_BIN` 环境变量
+
+
+## MCP CONTRACT
+
+- 传输仅使用 stdio，入口为 `contextweaver mcp`；stdout 必须保持纯 MCP 协议流。
+- 只暴露 `codebase-retrieval` 与 `prepare-prompt-context`。适配器复用 `retrieval`、`promptContext` 和 CLI 索引生命周期，不复制业务编排。
+- 两个仓库型调用都先执行 `pathPolicy`：客户端声明 Roots 时，Roots 读取失败、为空、无有效 `file://` Root 或仓库越界均闭锁拒绝；未声明时只接受真实绝对目录，并拒绝文件系统根与 HOME。
+- 未确认仓库只通过 Form Elicitation 请求首次索引授权。只有 `action=accept` 且 `approve=true` 才扫描；不支持 Elicitation 时返回 `authorization_required` 与可移植的 `cliExecutable` / `cliArgs`，`cliCommand` 仅为 POSIX 展示，不自动索引。
+- 同仓库并发授权在进程内合并，并在项目锁内复查 `confirmedAt`；MCP 工具可能触发首次索引，因此不得标记为幂等。
+- 业务结果同时写入 JSON TextContent 与 `structuredContent`，状态为 `ok | authorization_required | declined`；协议/执行错误使用 `isError` 并清理密钥和 URL。
+- 只有请求带 progress token 时才发送严格递增、尽力而为的索引进度；通知失败不影响索引。当前没有 MCP Tasks，进度也不保证延长宿主超时。
+
 
 ## UNIQUE STYLES
 
@@ -114,6 +130,6 @@ pnpm test:watch     # Vitest 监视模式
 ## NOTES
 
 - CI 用 Node 20，本地开发用 Node 24（`.node-version: v24.12.0`），`engines.node: >=20`
-- `isMcpMode` 检测保留但已不暴露 MCP 命令，纯 CLI 模式
+- `isMcpMode` 用于保持 stdio stdout 纯净；MCP 入口已恢复，但客户端沙箱和外部网络可达性仍由宿主决定
 - `pnpm.onlyBuiltDependencies` 精确控制原生模块编译，避免无关依赖触发编译
 - 持久化存储：SQLite (`~/.contextweaver/<projectId>/index.db`)、LanceDB (`vectors.lance`)、JSON 注册表 (`indexes.json`)
